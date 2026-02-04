@@ -1,1 +1,1 @@
-__all__ = ["htree", "hnode", "htraversal", "hperf"]
+__all__ = ["htree", "hnode", "htraversal", "hperf", "hcase"]

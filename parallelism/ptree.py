@@ -1,19 +1,18 @@
-from math import floor, ceil
-import numpy as np
-
-from parallelism.case import *
-from parallelism.ptraversal import *
-from parallelism.pperf import peer_to_peer_communication_pattern, all_reduce_communication_pattern
+from system.config import SystemConfig, ModelConfig
 
 from serving.request import Request
-from serving.config import SimulatorConfig, ModelConfig
+
+from parallelism.pcase import *
+from parallelism.ptraversal import *
+from parallelism.pperf import peer_to_peer_communication_pattern, all_reduce_communication_pattern
 
 from hardware.htree import HardwareTree
 from hardware.hperf import peer_to_peer_communication_time_cost, all_reduce_communication_time_cost
 
+
 class ParallelismTree:
     def __init__(self,
-                 sim_cfg: SimulatorConfig,
+                 sys_cfg: SystemConfig,
                  model_cfg: ModelConfig,
                  htree: HardwareTree,
                  case_idx: int =2):
@@ -21,36 +20,37 @@ class ParallelismTree:
         self.begin_nodes = None
         self.leaf_nodes = None
         self.mapper = None
-        self.sim_cfg = sim_cfg
+        self.sys_cfg = sys_cfg
         self.model_cfg = model_cfg
         self.htree = htree
         self.build_tree_by_case(case_idx)
 
     def build_tree_by_case(self, case_idx: int):
-        if case_idx == 0:
-            self.root_node, self.leaf_nodes = build_case_0(self.sim_cfg.req_type_num, self.model_cfg.layer_num)
-        elif case_idx == 1:
-            self.root_node, self.leaf_nodes = build_case_1(self.sim_cfg.req_type_num, self.model_cfg.layer_num)
-        elif case_idx == 2:
-            self.root_node, self.leaf_nodes = build_case_2(self.sim_cfg.req_type_num, self.model_cfg.layer_num)
-        elif case_idx == 3:
-            self.root_node, self.leaf_nodes = build_case_3(self.sim_cfg.req_type_num, self.model_cfg.layer_num)
-        elif case_idx == 4:
-            self.root_node, self.leaf_nodes = build_case_4(self.sim_cfg.req_type_num, self.model_cfg.layer_num)
-        else:
-            raise NotImplementedError
+        BUILD_CASES = {
+            0: build_case_0,
+            1: build_case_1,
+            2: build_case_2,
+            3: build_case_3,
+            4: build_case_4,
+            5: build_case_5,
+        }
+        try:
+            build_fn = BUILD_CASES[case_idx]
+        except KeyError:
+            raise ValueError(f"Case {case_idx} is not supported.")
+
+        self.root_node, self.leaf_nodes = build_fn(self.sys_cfg.req_type_num, self.model_cfg.layer_num)
 
         self.begin_nodes = [i for i in detect_begin_nodes(self.root_node)]
         self.hardware_mapping()
-
         # for begin_node in self.begin_nodes:
         #     leaf_nodes = derive_from_node(begin_node)
             # for leaf_node in leaf_nodes:
             #     leaf_node.print_info()
 
     def run(self, active_queue = None):
-        req_list_by_type = [[] for _ in range(self.sim_cfg.req_type_num)]
-        req_type_distribution = [0] * self.sim_cfg.req_type_num
+        req_list_by_type = [[] for _ in range(self.sys_cfg.req_type_num)]
+        req_type_distribution = [0] * self.sys_cfg.req_type_num
         if active_queue is not None:
             for r in active_queue:
                 req_list_by_type[r.req_type].append(r)
@@ -58,14 +58,23 @@ class ParallelismTree:
             # print('req_type_distribution:',req_type_distribution)
 
         max_run_time_cost_ms = 0.0
-        min_run_time_cost_ms = 10000000.0
         for begin_node in self.begin_nodes:
             leaf_nodes = derive_from_node(begin_node)
             sub_graph_time_cost_ms = self.analyse_sub_graph(begin_node, leaf_nodes, req_list_by_type, req_type_distribution)
             max_run_time_cost_ms = max(max_run_time_cost_ms, sub_graph_time_cost_ms)
-            min_run_time_cost_ms = min(min_run_time_cost_ms, sub_graph_time_cost_ms)
         return max_run_time_cost_ms
-        # return min_run_time_cost_ms
+
+    def run_from_begin_node(self, begin_node, active_queue = None):
+        req_list_by_type = [[] for _ in range(self.sys_cfg.req_type_num)]
+        req_type_distribution = [0] * self.sys_cfg.req_type_num
+        if active_queue is not None:
+            for r in active_queue:
+                req_list_by_type[r.req_type].append(r)
+                req_type_distribution[r.req_type] += 1
+
+        leaf_nodes = derive_from_node(begin_node)
+        sub_graph_time_cost_ms = self.analyse_sub_graph(begin_node, leaf_nodes, req_list_by_type, req_type_distribution)
+        return sub_graph_time_cost_ms
 
     def analyse_sub_graph(self,
                           root_of_subtree: BasicParallelismNode,
@@ -123,7 +132,8 @@ class ParallelismTree:
             for active_leaf_idx in active_leaf_indexes:
                 active_leaf = leaf_of_subtree[active_leaf_idx]
                 # [M,K] * [K,N] = [M,N]
-                M_size = sum([(d[1]-d[0])*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)]) # batch size
+                # M_size = sum([(d[1]-d[0])*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)]) # batch size
+                M_size = sum([1*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)]) # batch size
                 K_size = self.model_cfg.hidden_size # input dimension
                 N_size = (active_leaf.tp_attr[1] - active_leaf.tp_attr[0]) * (self.model_cfg.hidden_size + 2 * self.model_cfg.kv_hidden_size) # output dimension
                 if M_size > 0 and K_size > 0 and N_size > 0:
@@ -141,8 +151,10 @@ class ParallelismTree:
                 mem_ops = 0
                 comp_ops = 0
                 for d,n,r in zip(active_leaf.dp_attr, req_type_distribution, req_list_by_type):
-                    start_req_idx = floor(d[0] * n)
-                    end_req_idx = ceil(d[1] * n)
+                    # start_req_idx = floor(d[0] * n)
+                    # end_req_idx = ceil(d[1] * n)
+                    start_req_idx = 0*n
+                    end_req_idx = 1*n
                     for req_idx in range(start_req_idx, end_req_idx):
                         sequence_length = r[req_idx].prompt_tokens + r[req_idx].gen_tokens
                         # Q * K^T = S
@@ -177,7 +189,8 @@ class ParallelismTree:
             for active_leaf_idx in active_leaf_indexes:
                 active_leaf = leaf_of_subtree[active_leaf_idx]
                 # [M,K] * [K,N] = [M,N]
-                M_size = sum([(d[1]-d[0])*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)])
+                # M_size = sum([(d[1]-d[0])*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)])
+                M_size = sum([1*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)])
                 K_size =  (active_leaf.tp_attr[1] - active_leaf.tp_attr[0]) * self.model_cfg.hidden_size
                 N_size = self.model_cfg.hidden_size
                 if M_size > 0 and K_size > 0 and N_size > 0:
@@ -191,7 +204,8 @@ class ParallelismTree:
                 active_leaf = leaf_of_subtree[active_leaf_idx]
                 # 1.[M,K] * [K,N] = [M,N]
                 # 2.[M,N] * [N,P] = [M,P]
-                M_size = sum([(d[1]-d[0])*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)])
+                # M_size = sum([(d[1]-d[0])*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)])
+                M_size = sum([1*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)])
                 K_size = self.model_cfg.hidden_size
                 N_size = (active_leaf.tp_attr[1] - active_leaf.tp_attr[0]) * self.model_cfg.intermediate_size
                 P_size = self.model_cfg.hidden_size

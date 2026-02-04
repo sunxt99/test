@@ -1,9 +1,9 @@
 import argparse
 import time
 
-from serving.simulator import SimulatorConfig, run_simulation
-from serving.metrics import summarize_metrics
-from serving.config import ModelConfig
+from system.system import System
+from system.config import SystemConfig, ModelConfig
+from system.metrics import summarize_metrics
 
 MODEL_CONFIGS = {
     0: ModelConfig("llama3-8B", 4096, 32, 8, 14336, 32),
@@ -28,11 +28,11 @@ def parse_args():
                    help="QoS mode: preempt (shrink to max-batch-hi when priority exists) or reserve (reserve slots for priority).")
 
     # Capacity controls
-    p.add_argument("--max-batch-hi", type=int, default=16,
+    p.add_argument("--max-batch-hi", type=int, default=32,
                    help="Max batch size when priority exists (preempt mode). Default 16.")
-    p.add_argument("--max-batch-lo", type=int, default=256,
+    p.add_argument("--max-batch-lo", type=int, default=128,
                    help="Max batch size when NO priority exists; also total cap in reserve mode. Default 256.")
-    p.add_argument("--reserve-hi", type=int, default=16,
+    p.add_argument("--reserve-hi", type=int, default=32,
                    help="Reserved slots for priority in reserve mode (reduces normal concurrency). Default 16.")
 
     # Idle batching waits
@@ -53,7 +53,7 @@ def main():
 
     model_cfg = MODEL_CONFIGS[args.model_index]
 
-    sim_cfg = SimulatorConfig(
+    sys_cfg = SystemConfig(
         req_type_num=args.req_type_num,
         lam=args.lam,
         t_end=args.t_end,
@@ -70,8 +70,9 @@ def main():
 
     start_t = time.perf_counter()
 
-    res = run_simulation(sim_cfg, model_cfg)
-    print(summarize_metrics(res))
+    system = System(sys_cfg, model_cfg)
+    result = system.run_system()
+    print(summarize_metrics(result))
 
     end_t = time.perf_counter()
     print(f"Elapsed: {end_t - start_t:.6f}s")

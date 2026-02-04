@@ -1,1 +1,1 @@
-__all__ = ["ptree", "case", "pnode", "ptraversal", "pperf"]
+__all__ = ["ptree", "pcase", "pnode", "ptraversal", "pperf"]

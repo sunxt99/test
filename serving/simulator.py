@@ -4,13 +4,14 @@ from dataclasses import dataclass
 from typing import List, Tuple
 import numpy as np
 
+from system.config import ModelConfig
+
 from serving.request import Request
 from serving.metrics import SimulationResult
-from serving.config import SimulatorConfig, ModelConfig
+from serving.config import SimulatorConfig
 
+from parallelism.pnode import BasicParallelismNode
 from parallelism.ptree import ParallelismTree
-from hardware.htree import HardwareTree
-
 
 @dataclass(frozen=True)
 class Caps:
@@ -19,13 +20,12 @@ class Caps:
     cap_normal: int         # max number of normal in active (reserve mode), large in preempt
     priority_present: bool  # queue_hi non-empty OR priority already in active
 
-
 class Simulator:
-    def __init__(self, sim_cfg: SimulatorConfig, model_cfg: ModelConfig):
+    def __init__(self, sim_cfg: SimulatorConfig, model_cfg: ModelConfig, req_prob: List[float], ptree:ParallelismTree):
         self.sim_cfg = sim_cfg
         self.model_cfg = model_cfg
-        self.htree = HardwareTree()
-        self.ptree = ParallelismTree(sim_cfg, model_cfg, self.htree, case_idx=4)
+        self.req_prob = req_prob
+        self.ptree = ptree
         self._validate_sim_cfg(sim_cfg)
         self.rng = np.random.default_rng(sim_cfg.seed)
 
@@ -95,7 +95,7 @@ class Simulator:
         # else:
         #     pm, gm, ps, gs = 2048, 2048, 1024.0, 1024.0 # prompt_mean, gen_mean, prompt_std, gen_std
 
-        cls = int(self.rng.choice(self.sim_cfg.req_type_num, p=[0.9, 0.1]))
+        cls = int(self.rng.choice(self.sim_cfg.req_type_num, p=self.req_prob))
         if cls == 0:
             pm, gm, ps, gs = 256, 256, 128.0, 128.0 # prompt_mean, gen_mean, prompt_std, gen_std
         else:
@@ -254,7 +254,7 @@ class Simulator:
     # -------------------------
     # Step simulation
     # -------------------------
-    def _decode_one_step(self) -> None:
+    def _decode_one_step(self, begin_node: BasicParallelismNode) -> None:
         """One decode step
         """
         assert self.active
@@ -266,8 +266,8 @@ class Simulator:
         # self.t += self.sim_cfg.step_time_s
         # self.busy_time += self.sim_cfg.step_time_s
 
-        if self.perf_num_counter % 20 == 0:
-            step_time_s = self.ptree.run(self.active) / 1000
+        if self.perf_num_counter % 50 == 1:
+            step_time_s = self.ptree.run_from_begin_node(begin_node, self.active) / 1000
             self.perf_result_history = step_time_s
         else:
             step_time_s = self.perf_result_history
@@ -295,7 +295,7 @@ class Simulator:
         caps = self._compute_caps()
         self._rebalance(caps)
 
-    def run(self) -> SimulationResult:
+    def run(self, begin_node:BasicParallelismNode) -> SimulationResult:
         while self.t < self.sim_cfg.t_end:
             if not self.active:
                 caps = self._compute_caps()
@@ -305,14 +305,10 @@ class Simulator:
                     self._idle_advance_time()
                     continue
 
-            self._decode_one_step()
+            self._decode_one_step(begin_node)
             # return
 
             if self.t >= self.sim_cfg.t_end:
                 break
 
         return SimulationResult(finished=self.finished, t_end=self.sim_cfg.t_end, busy_time=self.busy_time)
-
-
-def run_simulation(sim_cfg: SimulatorConfig, model_cfg: ModelConfig) -> SimulationResult:
-    return Simulator(sim_cfg, model_cfg).run()

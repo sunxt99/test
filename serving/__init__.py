@@ -1,1 +1,1 @@
-__all__ = ["simulator", "request", "policies", "metrics", "config"]
+__all__ = ["simulator", "request", "policies", "config"]
