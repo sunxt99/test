@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple
 import numpy as np
+from math import ceil
+import random
 
 from system.config import ModelConfig
 
@@ -21,8 +23,13 @@ class Caps:
     priority_present: bool  # queue_hi non-empty OR priority already in active
 
 class Simulator:
-    def __init__(self, sim_cfg: SimulatorConfig, model_cfg: ModelConfig, req_prob: List[float], ptree:ParallelismTree):
+    def __init__(self,
+                 sim_cfg: SimulatorConfig,
+                 model_cfg: ModelConfig,
+                 req_prob: List[float],
+                 ptree:ParallelismTree):
         self.sim_cfg = sim_cfg
+        random.seed(self.sim_cfg.seed)
         self.model_cfg = model_cfg
         self.req_prob = req_prob
         self.ptree = ptree
@@ -100,6 +107,7 @@ class Simulator:
             pm, gm, ps, gs = 256, 256, 128.0, 128.0 # prompt_mean, gen_mean, prompt_std, gen_std
         else:
             pm, gm, ps, gs = 2048, 2048, 1024.0, 1024.0 # prompt_mean, gen_mean, prompt_std, gen_std
+            # pm, gm, ps, gs = 1024, 1024, 512.0, 512.0 # prompt_mean, gen_mean, prompt_std, gen_std
 
         prompt_tokens = self._sample_nonneg_int_normal(pm, ps, min_value=1)
         target_gen_tokens = self._sample_nonneg_int_normal(gm, gs, min_value=1)
@@ -263,14 +271,32 @@ class Simulator:
         self.perf_num_counter += 1
 
         # (1) time advance
-        # self.t += self.sim_cfg.step_time_s
-        # self.busy_time += self.sim_cfg.step_time_s
-
-        if self.perf_num_counter % 50 == 1:
-            step_time_s = self.ptree.run_from_begin_node(begin_node, self.active) / 1000
+        evaluation_cycle_stride = 100
+        sub_batch_num = self.sim_cfg.sub_batch_num
+        if self.perf_num_counter % evaluation_cycle_stride == 1:
+            if not self.sim_cfg.use_pp_sub_batch or sub_batch_num == 1:
+                step_time_s = self.ptree.run_from_begin_node(begin_node,
+                                                             self.active,
+                                                             False,
+                                                             self.sim_cfg.use_mp_sub_batch) / 1000
+            else:
+                sub_batch_size = max(1, ceil(len(self.active) / sub_batch_num))
+                random_indexes = random.sample(range(len(self.active)), sub_batch_size)
+                sub_batch_active = [self.active[i] for i in random_indexes]
+                sub_batch_step_time_s = self.ptree.run_from_begin_node(begin_node,
+                                                                       sub_batch_active,
+                                                                       True,
+                                                                       self.sim_cfg.use_mp_sub_batch) / 1000
+                step_time_s = sub_batch_num * sub_batch_step_time_s
+                # update delay time for requests
+                for idx, req in enumerate(self.active):
+                    offset_cycle_num = ceil(idx / sub_batch_size)
+                    req.accum_delay_time += sub_batch_step_time_s * offset_cycle_num * evaluation_cycle_stride
             self.perf_result_history = step_time_s
         else:
             step_time_s = self.perf_result_history
+        # print(step_time_s)
+
         self.t += step_time_s
         self.busy_time += step_time_s
 
@@ -311,4 +337,7 @@ class Simulator:
             if self.t >= self.sim_cfg.t_end:
                 break
 
-        return SimulationResult(finished=self.finished, t_end=self.sim_cfg.t_end, busy_time=self.busy_time)
+        return SimulationResult(t_end=self.sim_cfg.t_end,
+                                busy_time=self.busy_time,
+                                finished=self.finished,
+                                running=self.active)

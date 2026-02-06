@@ -14,6 +14,7 @@ class Request:
     gen_tokens: int = 0
     start_time: Optional[float] = None
     finish_time: Optional[float] = None
+    accum_delay_time: float = 0.0
 
     def done(self) -> bool:
         return self.gen_tokens >= self.target_gen_tokens

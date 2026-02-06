@@ -69,7 +69,7 @@ def all_reduce_communication_pattern(leaf_nodes: List[BasicHardwareNode],
             # 同一个 all reduce group 中的 leaf node 的 dp_attr 一定是相同的。
             all_reduce_batch_size = sum([ceil((d[1]-d[0])*n) for d,n in zip(leaf_node.dp_attr, req_type_distribution)])
         all_reduce_data_length = ceil(all_reduce_data_length_ratio * full_data_length)
-        all_reduce_data_size = all_reduce_batch_size*all_reduce_data_length
+        all_reduce_data_size = all_reduce_batch_size * all_reduce_data_length
         all_reduce_tuple = (all_reduce_leaf_name_list, all_reduce_data_size)
         all_reduce_comm_pattern.append(all_reduce_tuple)
     return all_reduce_groups, all_reduce_comm_pattern

@@ -25,6 +25,13 @@ class SystemConfig:
     lam: float                 # req/s
     t_end: float               # seconds
 
+    # Pipline parallelism and sub batch num
+    use_pp_sub_batch: bool = False
+    sub_batch_num: int = 1
+
+    # Module Parallelism
+    use_mp_sub_batch: bool = False
+
     # QoS / priority
     priority_ratio: float = 0.05
     mode: Mode = "preempt"     # "preempt" or "reserve"

@@ -4,7 +4,12 @@ from serving.request import Request
 
 @dataclass
 class SimulationResult:
-    finished: list[Request]
     # Time accounting
     t_end: float
     busy_time: float
+
+    # Finished and running requests
+    finished: list[Request]
+    running: list[Request]
+
+    # Hardware utilization

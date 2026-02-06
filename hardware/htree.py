@@ -14,6 +14,7 @@ class HardwareTree:
             0: build_case_0,
             1: build_case_1,
             2: build_case_2,
+            3: build_case_3,
         }
         try:
             build_fn = BUILD_CASES[case_idx]

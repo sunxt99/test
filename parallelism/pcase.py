@@ -215,7 +215,7 @@ def build_case_4(request_type_num,
 
 def build_case_5(request_type_num,
                  total_layer_num):
-    # ------------------ CASE 4 --------------------------
+    # ------------------ CASE 5 --------------------------
     node_0 = ModuleParallelismNode(name='p0',
                                  dp_attr=[[0.0, 1.0]] * request_type_num,
                                  pp_attr=[0, total_layer_num - 1],
@@ -239,4 +239,118 @@ def build_case_5(request_type_num,
     node_2.add_child(leaf_3)
 
     # return node_0, [leaf_0, leaf_1, leaf_2, leaf_3, leaf_4, leaf_5, leaf_6, leaf_7]
+    return node_0, [leaf_0, leaf_2, leaf_1, leaf_3]
+
+
+def build_case_6(request_type_num,
+                 total_layer_num):
+    # ------------------ CASE 6 --------------------------
+    node_0 = PipelineParallelismNode(name='p0',
+                                   dp_attr=[[0.0, 1.0]] * request_type_num,
+                                   pp_attr=[0, total_layer_num - 1],
+                                   tp_attr=[0.0, 1.0],
+                                   xp_attr=XpTag.BOTH,
+                                   parallel_attr=[0.25, 0.25, 0.25, 0.25])
+    # node_0 = TensorParallelismNode(name='p0',
+    #                                dp_attr=[[0.0, 1.0]] * request_type_num,
+    #                                pp_attr=[0, total_layer_num - 1],
+    #                                tp_attr=[0.0, 1.0],
+    #                                xp_attr=XpTag.BOTH,
+    #                                parallel_attr=[0.25, 0.25, 0.25, 0.25])
+
+    leaf_0 = BasicHardwareNode(idx=0, name='l0')
+    leaf_1 = BasicHardwareNode(idx=1, name='l1')
+    leaf_2 = BasicHardwareNode(idx=2, name='l2')
+    leaf_3 = BasicHardwareNode(idx=3, name='l3')
+
+    node_0.add_child(leaf_0)
+    node_0.add_child(leaf_1)
+    node_0.add_child(leaf_2)
+    node_0.add_child(leaf_3)
+
+    return node_0, [leaf_0, leaf_1, leaf_2, leaf_3]
+
+
+def build_case_7(request_type_num,
+                 total_layer_num):
+    # ------------------ CASE 7 --------------------------
+    node_0 = ModuleParallelismNode(name='p0',
+                                 dp_attr=[[0.0, 1.0]] * request_type_num,
+                                 pp_attr=[0, total_layer_num - 1],
+                                 tp_attr=[0.0, 1.0],
+                                 xp_attr=XpTag.BOTH,
+                                 parallel_attr=[XpTag.LINEAR, XpTag.ATTENTION])
+    node_1 = PipelineParallelismNode(name='p1', parallel_attr=[0.7, 0.3])
+    node_2 = PipelineParallelismNode(name='p2', parallel_attr=[0.5, 0.5])
+
+    node_0.add_child(node_1)
+    node_0.add_child(node_2)
+
+    leaf_0 = BasicHardwareNode(idx = 0, name='l0')
+    leaf_1 = BasicHardwareNode(idx = 1, name='l1')
+    leaf_2 = BasicHardwareNode(idx = 2, name='l2')
+    leaf_3 = BasicHardwareNode(idx = 3, name='l3')
+
+    node_1.add_child(leaf_0)
+    node_1.add_child(leaf_1)
+    node_2.add_child(leaf_2)
+    node_2.add_child(leaf_3)
+
+    return node_0, [leaf_0, leaf_1, leaf_2, leaf_3]
+
+
+
+def build_case_8(request_type_num,
+                 total_layer_num):
+    # ------------------ CASE 8 --------------------------
+    node_0 = PipelineParallelismNode(name='p0',
+                                     dp_attr=[[0.0, 1.0]] * request_type_num,
+                                     pp_attr=[0, total_layer_num - 1],
+                                     tp_attr=[0.0, 1.0],
+                                     xp_attr=XpTag.BOTH,
+                                     parallel_attr=[0.5, 0.5])
+    node_1 = ModuleParallelismNode( parallel_attr=[XpTag.LINEAR, XpTag.ATTENTION])
+    node_2 = PipelineParallelismNode(name='p2', parallel_attr=[0.5, 0.5])
+
+    node_0.add_child(node_1)
+    node_0.add_child(node_2)
+
+    leaf_0 = BasicHardwareNode(idx = 0, name='l0')
+    leaf_1 = BasicHardwareNode(idx = 1, name='l1')
+    leaf_2 = BasicHardwareNode(idx = 2, name='l2')
+    leaf_3 = BasicHardwareNode(idx = 3, name='l3')
+
+    node_1.add_child(leaf_0)
+    node_1.add_child(leaf_1)
+    node_2.add_child(leaf_2)
+    node_2.add_child(leaf_3)
+
+    return node_0, [leaf_0, leaf_1, leaf_2, leaf_3]
+
+
+def build_case_9(request_type_num,
+                 total_layer_num):
+    # ------------------ CASE 9 --------------------------
+    node_0 = DataParallelismNode(name='p0',
+                                 dp_attr=[[0.0, 1.0]] * request_type_num,
+                                 pp_attr=[0, total_layer_num - 1],
+                                 tp_attr=[0.0, 1.0],
+                                 xp_attr=XpTag.BOTH,
+                                 parallel_attr=[[0.7,0.3], [0.2,0.8]])
+    node_1 = TensorParallelismNode(name='p1', parallel_attr=[0.5, 0.5])
+    node_2 = TensorParallelismNode(name='p2', parallel_attr=[0.5, 0.5])
+
+    node_0.add_child(node_1)
+    node_0.add_child(node_2)
+
+    leaf_0 = BasicHardwareNode(idx = 0, name='l0')
+    leaf_1 = BasicHardwareNode(idx = 1, name='l1')
+    leaf_2 = BasicHardwareNode(idx = 2, name='l2')
+    leaf_3 = BasicHardwareNode(idx = 3, name='l3')
+
+    node_1.add_child(leaf_0)
+    node_1.add_child(leaf_1)
+    node_2.add_child(leaf_2)
+    node_2.add_child(leaf_3)
+
     return node_0, [leaf_0, leaf_2, leaf_1, leaf_3]

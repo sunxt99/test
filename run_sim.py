@@ -14,6 +14,7 @@ MODEL_CONFIGS = {
 
 def parse_args():
     p = argparse.ArgumentParser(description="LLM decode batching simulator (no prefill) with priority QoS.")
+
     # Model
     p.add_argument("--model-index", type = int, required=True, help="The index of the model to run.")
 

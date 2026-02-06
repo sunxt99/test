@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 from system.config import SystemConfig, ModelConfig
 
 from serving.request import Request
@@ -33,6 +35,10 @@ class ParallelismTree:
             3: build_case_3,
             4: build_case_4,
             5: build_case_5,
+            6: build_case_6,
+            7: build_case_7,
+            8: build_case_8,
+            9: build_case_9,
         }
         try:
             build_fn = BUILD_CASES[case_idx]
@@ -48,7 +54,36 @@ class ParallelismTree:
             # for leaf_node in leaf_nodes:
             #     leaf_node.print_info()
 
-    def run(self, active_queue = None):
+    def summarise_layer_info(self, begin_node: BasicHardwareNode):
+        leaf_nodes: List[BasicHardwareNode] = derive_from_node(begin_node)
+        total_layer_num = self.model_cfg.layer_num
+
+        # for leaf_node in leaf_nodes:
+        #     print(leaf_node.pp_attr)
+
+        # 例子
+        # leaf0 pp_attr: [0, 7]
+        # leaf1 pp_attr: [4, 15]
+        # leaf2 pp_attr: [0, 9]
+        # so pp_group_0 = [leaf0,leaf2], layer: [0,4]
+        #    pp_group_1 = [leaf0,leaf1,leaf2], layer: [5,7]
+        #    pp_group_2 = [leaf1,leaf2], layer: [8,9]
+        #    pp_group_3 = [leaf1], layer: [10, 15]
+        # 则需要有 4 个 sub batch。
+        active_leaf_set = set()
+        for layer_idx in range(total_layer_num):
+            active_leaf_list = []
+            for leaf_node in leaf_nodes:
+                if leaf_node.pp_attr[0] <= layer_idx <= leaf_node.pp_attr[1]:
+                    active_leaf_list.append(leaf_node.name)
+            active_leaf_set.add(frozenset(active_leaf_list))
+        sub_batch_num = len(active_leaf_set)
+        return sub_batch_num
+
+    def run(self,
+            active_queue: List[Request],
+            use_pp_sub_batch: bool,
+            use_mp_sub_batch: bool):
         req_list_by_type = [[] for _ in range(self.sys_cfg.req_type_num)]
         req_type_distribution = [0] * self.sys_cfg.req_type_num
         if active_queue is not None:
@@ -60,11 +95,20 @@ class ParallelismTree:
         max_run_time_cost_ms = 0.0
         for begin_node in self.begin_nodes:
             leaf_nodes = derive_from_node(begin_node)
-            sub_graph_time_cost_ms = self.analyse_sub_graph(begin_node, leaf_nodes, req_list_by_type, req_type_distribution)
+            sub_graph_time_cost_ms = self.analyse_sub_graph(begin_node,
+                                                            leaf_nodes,
+                                                            req_list_by_type,
+                                                            req_type_distribution,
+                                                            use_pp_sub_batch,
+                                                            use_mp_sub_batch)
             max_run_time_cost_ms = max(max_run_time_cost_ms, sub_graph_time_cost_ms)
         return max_run_time_cost_ms
 
-    def run_from_begin_node(self, begin_node, active_queue = None):
+    def run_from_begin_node(self,
+                            begin_node,
+                            active_queue: List[Request],
+                            use_pp_sub_batch: bool,
+                            use_mp_sub_batch: bool):
         req_list_by_type = [[] for _ in range(self.sys_cfg.req_type_num)]
         req_type_distribution = [0] * self.sys_cfg.req_type_num
         if active_queue is not None:
@@ -73,48 +117,156 @@ class ParallelismTree:
                 req_type_distribution[r.req_type] += 1
 
         leaf_nodes = derive_from_node(begin_node)
-        sub_graph_time_cost_ms = self.analyse_sub_graph(begin_node, leaf_nodes, req_list_by_type, req_type_distribution)
+        sub_graph_time_cost_ms = self.analyse_sub_graph(begin_node,
+                                                        leaf_nodes,
+                                                        req_list_by_type,
+                                                        req_type_distribution,
+                                                        use_pp_sub_batch,
+                                                        use_mp_sub_batch)
+        # print(len(active_queue), sub_graph_time_cost_ms)
         return sub_graph_time_cost_ms
+
 
     def analyse_sub_graph(self,
                           root_of_subtree: BasicParallelismNode,
                           leaf_nodes_of_subtree: List[BasicHardwareNode],
                           req_list_by_type: List[List[Request]],
-                          req_type_distribution: List[int]) -> float:
+                          req_type_distribution: List[int],
+                          use_pp_sub_batch: bool,
+                          use_mp_sub_batch: bool) -> float:
+
         for leaf in leaf_nodes_of_subtree:
             assert leaf.is_leaf()
-        previous_active_leaf_indexes = []
-        processing_time_cost_ms = 0.0
+            # print(leaf.name, leaf.pp_attr, leaf.xp_attr)
+        previous_module_active_leaf_indexes = []
+
+        # For MP sub batch
+        layer_if_use_mp = [False for _ in range(self.model_cfg.layer_num)]
+
+        # 记录每层运行时间
+        layer_qkv_time_ms = [0 for _ in range(self.model_cfg.layer_num)]
+        layer_attn_time_ms = [0 for _ in range(self.model_cfg.layer_num)]
+        layer_proj_time_ms = [0 for _ in range(self.model_cfg.layer_num)]
+        layer_ffn_time_ms = [0 for _ in range(self.model_cfg.layer_num)]
+
+        # 记录每个 layer 都有哪些 device 参与过（不区分模块）
+        layer_leaf_info = [[] for _ in range(self.model_cfg.layer_num)]
+        for layer_idx in range(self.model_cfg.layer_num):
+            for leaf_idx, leaf in enumerate(leaf_nodes_of_subtree):
+                if leaf.pp_attr[0] <= layer_idx <= leaf.pp_attr[1]:
+                    layer_leaf_info[layer_idx].append(leaf_idx)
+                    if leaf.xp_attr is not XpTag.BOTH:
+                        layer_if_use_mp[layer_idx] = True
+
+        # print(layer_if_use_mp)
+        # print(layer_leaf_info)
+
+        # 记录不使用 PP/MP sub batch 情况下的总运行时间
+        original_processing_time_cost_ms = 0.0
+        #
+        mp_subbatch_processing_time_cost_ms = 0.0
+        # 每个 module 都有一个 result cache，用于减少重复的模拟
         result_cache = [dict() for _ in range(4)]
+        # 记录每个 device 上的执行时间，用于 pipeline parallelism
+        execution_time_of_leafs_ms = [0 for _ in range(len(leaf_nodes_of_subtree))]
+
         for layer_idx in range(self.model_cfg.layer_num):
             for module_idx in range(4):  # QKV / ATTN / PROJ / FFN
-                if layer_idx == 0 and module_idx == 0:
-                    continue
-                active_leaf_indexes = trigger_leaf_node(layer_idx, module_idx, leaf_nodes_of_subtree)
-
-                if frozenset(active_leaf_indexes) not in result_cache[module_idx]:
+                module_active_leaf_indexes = trigger_leaf_node(layer_idx, module_idx, leaf_nodes_of_subtree)
+                if frozenset(module_active_leaf_indexes) not in result_cache[module_idx]:
                     computation_time_cost_ms = self.analyse_computation_pattern(root_of_subtree,
                                                                              leaf_nodes_of_subtree,
                                                                              module_idx,
-                                                                             active_leaf_indexes,
+                                                                             module_active_leaf_indexes,
                                                                              req_list_by_type, req_type_distribution)
                     communication_time_cost_ms = self.analyse_communication_pattern(root_of_subtree,
                                                                                    leaf_nodes_of_subtree,
                                                                                    layer_idx,
                                                                                    module_idx,
-                                                                                   previous_active_leaf_indexes,
-                                                                                   active_leaf_indexes,
+                                                                                   previous_module_active_leaf_indexes,
+                                                                                   module_active_leaf_indexes,
                                                                                    req_type_distribution)
-                    # layer_time_cost = max(computation_time_cost_ms, communication_time_cost_ms)
-                    layer_time_cost = computation_time_cost_ms + communication_time_cost_ms
-                    result_cache[module_idx][frozenset(active_leaf_indexes)] = layer_time_cost
+                    # module_time_cost_ms = max(computation_time_cost_ms, communication_time_cost_ms)
+                    module_time_cost_ms = computation_time_cost_ms + communication_time_cost_ms
+                    # layer_idx = 0 和 module_idx = 0 的情况不能记录进 cache，否则后面的 tp 都没有了
+                    if layer_idx != 0 or module_idx != 0:
+                        result_cache[module_idx][frozenset(module_active_leaf_indexes)] = module_time_cost_ms
                 else:
-                    layer_time_cost = result_cache[module_idx][frozenset(active_leaf_indexes)]
-                processing_time_cost_ms += layer_time_cost
-                previous_active_leaf_indexes = active_leaf_indexes
+                    module_time_cost_ms = result_cache[module_idx][frozenset(module_active_leaf_indexes)]
 
-        return processing_time_cost_ms
+                if module_idx == 0:
+                    layer_qkv_time_ms[layer_idx] = module_time_cost_ms
+                elif module_idx == 1:
+                    layer_attn_time_ms[layer_idx] = module_time_cost_ms
+                elif module_idx == 2:
+                    layer_proj_time_ms[layer_idx] = module_time_cost_ms
+                elif module_idx == 3:
+                    layer_ffn_time_ms[layer_idx] = module_time_cost_ms
 
+                previous_module_active_leaf_indexes = module_active_leaf_indexes
+
+            # layer_time_cost_ms 这是为了 PP sub batch 设计的。
+            # if use_pp_sub_batch:
+            #     for leaf_idx in layer_leaf_info[layer_idx]:
+            #         execution_time_of_leafs_ms[leaf_idx] += layer_qkv_time_ms[layer_idx] + \
+            #                                                 layer_attn_time_ms[layer_idx] + \
+            #                                                 layer_proj_time_ms[layer_idx] + \
+            #                                                 layer_ffn_time_ms[layer_idx]
+
+
+        # execution_time_of_leafs_ms 在有 mp 的情况下要记录使用 mp double sub batch 优化的结果。
+        # execution_time_of_leafs_ms 在没有 mp 的情况下要记录 original 结果。
+        # 给定一个使用 MP Double Sub Batch 的例子：
+        # layer0: leaf0, leaf1
+        # layer1: leaf0, leaf1
+        # layer2: leaf0, leaf1
+        # layer3: leaf1, leaf3
+        # layer4: leaf1, leaf3
+        # layer5: leaf2, leaf3
+        # layer6: leaf2, leaf3
+        # layer7: leaf2, leaf3
+        # layer8: leaf2, leaf3
+        # 对于每个 layer 进行遍历，当 previous leaf list 不等于 current 时，说明
+        previous_leaf_list = []
+        for layer_idx in range(self.model_cfg.layer_num):
+            # 原始情况，不考虑 PP 或 MP，直接累加即可
+            current_leaf_list = layer_leaf_info[layer_idx]
+            full_layer_time_ms = (layer_qkv_time_ms[layer_idx] +
+                                  layer_attn_time_ms[layer_idx] +
+                                  layer_proj_time_ms[layer_idx] +
+                                  layer_ffn_time_ms[layer_idx])
+            original_processing_time_cost_ms += full_layer_time_ms
+            # 当不考虑 MP 或者该层没有 MP 参与时，按照 original 形式
+            if not use_mp_sub_batch or not layer_if_use_mp[layer_idx]:
+                if use_pp_sub_batch:
+                    for leaf_idx in current_leaf_list:
+                        execution_time_of_leafs_ms[leaf_idx] += full_layer_time_ms
+                mp_subbatch_processing_time_cost_ms += full_layer_time_ms
+                previous_leaf_list = []
+            # 考虑 MP 且该层有 MP 参与，当前层不等于前层，说明遇到新的 double sub batch
+            elif current_leaf_list != previous_leaf_list:
+                first_double_sub_batch_time_ms = (layer_qkv_time_ms[layer_idx] +
+                                                  max(layer_qkv_time_ms[layer_idx], layer_attn_time_ms[layer_idx]) +
+                                                  max(layer_proj_time_ms[layer_idx] + layer_ffn_time_ms[layer_idx], layer_attn_time_ms[layer_idx]) +
+                                                  layer_proj_time_ms[layer_idx] + layer_ffn_time_ms[layer_idx]) / 2
+                if use_pp_sub_batch:
+                    for leaf_idx in current_leaf_list:
+                        execution_time_of_leafs_ms[leaf_idx] += first_double_sub_batch_time_ms
+                mp_subbatch_processing_time_cost_ms += first_double_sub_batch_time_ms
+                previous_leaf_list = current_leaf_list
+            # 考虑 MP 且该层有 MP 参与，当前层等于前层，说明未遇到新的 double sub batch
+            else: # when current_leaf_list == previous_leaf_list:
+                next_double_sub_batch_time_ms = 2 * max(layer_qkv_time_ms[layer_idx] + layer_proj_time_ms[layer_idx] + layer_ffn_time_ms[layer_idx],
+                                                        layer_attn_time_ms[layer_idx]) / 2
+                if use_pp_sub_batch:
+                    for leaf_idx in current_leaf_list:
+                        execution_time_of_leafs_ms[leaf_idx] += next_double_sub_batch_time_ms
+                mp_subbatch_processing_time_cost_ms += next_double_sub_batch_time_ms
+                previous_leaf_list = current_leaf_list
+
+        return max(execution_time_of_leafs_ms) if use_pp_sub_batch else \
+                mp_subbatch_processing_time_cost_ms if use_mp_sub_batch else \
+                original_processing_time_cost_ms
 
     def analyse_computation_pattern(self,
                                     root_of_subtree: BasicParallelismNode,
@@ -128,7 +280,7 @@ class ParallelismTree:
 
         if module_idx == 0:
             if print_detail:
-                print("------ Compute QKV")
+                print("------ Compute QKV ------")
             for active_leaf_idx in active_leaf_indexes:
                 active_leaf = leaf_of_subtree[active_leaf_idx]
                 # [M,K] * [K,N] = [M,N]
@@ -141,7 +293,7 @@ class ParallelismTree:
                                             self.mapper[active_leaf.name].compute_gemm_time_cost(M_size, N_size, K_size))
         elif module_idx == 1:
             if print_detail:
-                print("------ Compute ATTN")
+                print("------ Compute ATTN ------")
             for active_leaf_idx in active_leaf_indexes:
                 active_leaf = leaf_of_subtree[active_leaf_idx]
                 query_head_num = ceil(self.model_cfg.query_head_num * (active_leaf.tp_attr[1] - active_leaf.tp_attr[0]))
@@ -167,17 +319,6 @@ class ParallelismTree:
                             kv_head_num * self.model_cfg.head_dim * sequence_length +
                             query_head_num * sequence_length) * 2 # 考虑 float16 类型
                         comp_ops += query_head_num * self.model_cfg.head_dim * sequence_length * 2
-
-                        # Q * K = S
-                        # computation_time_ms += self.mapper[active_leaf.name].compute_gemm_time_cost(gqa_ratio,
-                        #                                                                        sequence_length,
-                        #                                                                        self.model_cfg.head_dim)
-                        # # S * V = C
-                        # computation_time_ms += self.mapper[active_leaf.name].compute_gemm_time_cost(gqa_ratio,
-                        #                                                                        self.model_cfg.head_dim,
-                        #                                                                        sequence_length)
-                    # print(req_type_distribution)
-                    # print(comp_ops, mem_ops)
                 if mem_ops > 0:
                     computation_time_ms += self.mapper[active_leaf.name].compute_gemm_time_cost_by_ops(comp_ops, mem_ops)
 
@@ -185,7 +326,7 @@ class ParallelismTree:
 
         elif module_idx == 2:
             if print_detail:
-                print("------ Compute PROJ")
+                print("------ Compute PROJ ------")
             for active_leaf_idx in active_leaf_indexes:
                 active_leaf = leaf_of_subtree[active_leaf_idx]
                 # [M,K] * [K,N] = [M,N]
@@ -199,7 +340,7 @@ class ParallelismTree:
 
         else:
             if print_detail:
-                print("------ Compute FFN")
+                print("------ Compute FFN ------")
             for active_leaf_idx in active_leaf_indexes:
                 active_leaf = leaf_of_subtree[active_leaf_idx]
                 # 1.[M,K] * [K,N] = [M,N]
