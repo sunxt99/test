@@ -1,5 +1,4 @@
 from copy import deepcopy
-from ctypes.wintypes import DOUBLE
 
 from system.config import SystemConfig, ModelConfig
 from serving.simulator import Simulator
@@ -11,12 +10,12 @@ class System:
         self.sys_cfg = sys_cfg
         self.model_cfg = model_cfg
         # 0 是 baseline；1 是测试例子；2 是简化例子
-        hcase_idx = 2
+        hcase_idx = 0
         self.htree = HardwareTree(hcase_idx)
         # 0 1 2 测试例子，复杂但性能差；3 是 baseline；4 已超越 baseline；5 是简化例子
-        pcase_idx = 9
+        pcase_idx = 4
         self.ptree = ParallelismTree(sys_cfg, model_cfg, self.htree, case_idx=pcase_idx)
-        self.req_prob = [0.9, 0.1]
+        self.req_prob = [0.8, 0.2]
 
     def run_system(self):
         # 每个 begin_nodes 都对应一个 simulator

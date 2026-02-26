@@ -106,8 +106,8 @@ class Simulator:
         if cls == 0:
             pm, gm, ps, gs = 256, 256, 128.0, 128.0 # prompt_mean, gen_mean, prompt_std, gen_std
         else:
-            pm, gm, ps, gs = 2048, 2048, 1024.0, 1024.0 # prompt_mean, gen_mean, prompt_std, gen_std
-            # pm, gm, ps, gs = 1024, 1024, 512.0, 512.0 # prompt_mean, gen_mean, prompt_std, gen_std
+            # pm, gm, ps, gs = 2048, 2048, 1024.0, 1024.0 # prompt_mean, gen_mean, prompt_std, gen_std
+            pm, gm, ps, gs = 1024, 1024, 512.0, 512.0 # prompt_mean, gen_mean, prompt_std, gen_std
 
         prompt_tokens = self._sample_nonneg_int_normal(pm, ps, min_value=1)
         target_gen_tokens = self._sample_nonneg_int_normal(gm, gs, min_value=1)
@@ -271,7 +271,7 @@ class Simulator:
         self.perf_num_counter += 1
 
         # (1) time advance
-        evaluation_cycle_stride = 100
+        evaluation_cycle_stride = 1000
         sub_batch_num = self.sim_cfg.sub_batch_num
         if self.perf_num_counter % evaluation_cycle_stride == 1:
             if not self.sim_cfg.use_pp_sub_batch or sub_batch_num == 1:

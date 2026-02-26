@@ -167,7 +167,6 @@ def build_case_3(request_type_num,
     # return node_0, [leaf_0, leaf_1, leaf_2, leaf_3, leaf_4, leaf_5, leaf_6, leaf_7]
     return node_0, [leaf_0, leaf_4, leaf_1, leaf_5, leaf_2, leaf_6, leaf_3, leaf_7]
 
-
 def build_case_4(request_type_num,
                  total_layer_num):
     # ------------------ CASE 4 --------------------------
@@ -176,7 +175,7 @@ def build_case_4(request_type_num,
                                  pp_attr=[0, total_layer_num - 1],
                                  tp_attr=[0.0, 1.0],
                                  xp_attr=XpTag.BOTH,
-                                 parallel_attr=[[0.5,0.5], [0.5,0.5]])
+                                 parallel_attr=[[0.4,0.6], [0.5,0.5]])
     node_1 = ModuleParallelismNode(name='p1', parallel_attr=[XpTag.LINEAR, XpTag.ATTENTION])
     node_2 = TensorParallelismNode(name='p2', parallel_attr=[0.5, 0.5])
     node_3 = TensorParallelismNode(name='p3', parallel_attr=[0.5, 0.5])

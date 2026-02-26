@@ -132,6 +132,7 @@ class PipelineParallelismNode(BasicParallelismNode):
             seg_end = cur + c - 1
             segments.append([seg_begin, seg_end])
             cur = seg_end + 1
+
         return segments
 
     def derive_child_info(self, child: BasicNode, child_idx: int):

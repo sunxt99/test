@@ -77,3 +77,34 @@ def summarize_metrics(res_list: List[SimulationResult]) -> str:
     # lines.append(_summarize_group("NORMAL", normal, float(t_end)))
 
     return "\n".join(lines)
+
+
+def summarize_metrics_data(res_list: List[SimulationResult]):
+    # processed 包括 running 和 finished
+    processed = []
+    finished = []
+    for res in res_list:
+        finished.extend(res.finished)
+        processed.extend(res.finished)
+        processed.extend(res.running)
+    finished_num = len(finished)
+
+    busy_time = np.mean([res.busy_time for res in res_list])
+    t_end = np.mean([res.t_end for res in res_list])
+
+    util = busy_time / t_end if t_end > 0 else float("nan")
+
+    # prio = [r for r in finished if getattr(r, "is_priority", False)]
+    # normal = [r for r in finished if not getattr(r, "is_priority", False)]
+
+    gen_tokens = np.sum([r.gen_tokens for r in processed], dtype=float)
+
+    # lines = []
+    # lines.append("=== Simulation Summary ===")
+    # lines.append(f"horizon={t_end:.6f}s, busy_time={busy_time:.6f}s, utilization={util:.6f}")
+    # lines.append(f"finished_total={finished_num}, throughput_total={finished_num / t_end:.6f} req/s")
+    # lines.append(f"throughput={gen_tokens/t_end} token/s")
+    # lines.append("")
+    # lines.append(_summarize_group("ALL", finished, float(t_end)))
+
+    return gen_tokens/t_end
