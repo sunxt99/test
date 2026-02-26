@@ -56,6 +56,8 @@ class ParallelismTree:
 
     def summarise_layer_info(self, begin_node: BasicHardwareNode):
         leaf_nodes: List[BasicHardwareNode] = derive_from_node(begin_node)
+        # for leaf in leaf_nodes:
+        #     leaf.print_info()
         total_layer_num = self.model_cfg.layer_num
 
         # for leaf_node in leaf_nodes:

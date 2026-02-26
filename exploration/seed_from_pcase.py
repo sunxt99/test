@@ -15,7 +15,7 @@ from parallelism.pnode import (
     XpTag,
 )
 
-from exploration.individual_v3 import (
+from exploration.individual import (
     Topology,
     TopologyNodeGene,
     DeviceAssign,

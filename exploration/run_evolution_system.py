@@ -6,10 +6,16 @@ import argparse
 
 from system.config import SystemConfig, ModelConfig
 
-from exploration.decoder_v3 import RootInit
-from exploration.evolution_v3 import InitConfig, EvoConfig, evolve
-from exploration.fitness_adapter_v3 import make_fitness_fn, default_result_to_fitness
-from exploration.ind_io_v3 import print_individual, save_individual_json, load_individual_json
+from exploration.decoder import RootInit
+
+pareto_mode = False
+if pareto_mode:
+    from exploration.evolution_pareto import InitConfig, EvoConfig, evolve
+else:
+    from exploration.evolution import InitConfig, EvoConfig, evolve
+
+from exploration.fitness_adapter import make_fitness_fn, default_result_to_fitness
+from exploration.ind_io import print_individual, save_individual_json, load_individual_json
 
 from parallelism.pcase import (
     build_case_0, build_case_1, build_case_2, build_case_3, build_case_4,
@@ -93,6 +99,7 @@ def main() -> None:
     fitness_fn = make_fitness_fn(
         sys_cfg,
         model_cfg,
+        pareto_mode=pareto_mode,
         req_prob=req_prob,
         hcase_idx=0,
         base_case_idx_for_init=3,
@@ -104,14 +111,16 @@ def main() -> None:
                           max_children=8,
                           p_stop_expand=0.40)
 
-    evo_cfg = EvoConfig(generations=5,
+    evo_cfg = EvoConfig(generations=4,
                         #generations=20,
                         elite_size=5,
                         p_topology_mut=0.15,
                         p_numeric_mut=0.50,
                         p_device_mut=0.35,
+                        # p_topology_mut=0.55,
+                        # p_numeric_mut=0.30,
+                        # p_device_mut=0.15,
                         enable_cache=True)
-
 
     # 根据经验进行种群初值
     builders = {
@@ -126,10 +135,10 @@ def main() -> None:
         8: build_case_8,
         9: build_case_9,
     }
-    pop_seed_idxs = [4]
-    # pop_seed_idxs = [3]
+    pop_seed_indexes = [4]
+    # pop_seed_indexes = []
     pop_seed_roots = []
-    for i in pop_seed_idxs:
+    for i in pop_seed_indexes:
         if i not in builders:
             continue
         root, _leaves = builders[i](args.req_type_num, model_cfg.layer_num)

@@ -28,7 +28,8 @@ def _summarize_group(name: str, reqs: list[Request], t_end: float) -> str:
     st = np.array([r.finish_time + r.accum_delay_time - r.start_time for r in reqs], dtype=float)
     prompt = np.array([r.prompt_tokens for r in reqs], dtype=float)
     gen_tgt = np.array([r.target_gen_tokens for r in reqs], dtype=float)
-    tpot = np.array([r.target_gen_tokens/(r.finish_time + r.accum_delay_time - r.start_time)/1000 for r in reqs], dtype=float)
+    usr_throughput = np.array([r.target_gen_tokens/(r.finish_time + r.accum_delay_time - r.start_time)/1000 for r in reqs], dtype=float)
+    tpot = np.array([(r.finish_time + r.accum_delay_time - r.start_time) / r.target_gen_tokens for r in reqs], dtype=float)
 
     lines = []
     lines.append(f"[{name}] finished={n}, throughput={n / t_end:.6f} req/s")
@@ -40,7 +41,9 @@ def _summarize_group(name: str, reqs: list[Request], t_end: float) -> str:
                  f"mean={_fmt_ms(float(np.mean(qd)))}, p50={_fmt_ms(_pct(qd, 50))}, p95={_fmt_ms(_pct(qd, 95))}, p99={_fmt_ms(_pct(qd, 99))}")
     lines.append("  service_ms: " +
                  f"mean={_fmt_ms(float(np.mean(st)))}, p50={_fmt_ms(_pct(st, 50))}, p95={_fmt_ms(_pct(st, 95))}, p99={_fmt_ms(_pct(st, 99))}")
-    lines.append("  TPOT_token/s: " +
+    lines.append("  user_throughput_token/s: " +
+                 f"mean={_fmt_ms(float(np.mean(usr_throughput)))}, p10={_fmt_ms(_pct(usr_throughput, 10))}, p50={_fmt_ms(_pct(usr_throughput, 50))}, p90={_fmt_ms(_pct(usr_throughput, 90))}")
+    lines.append("  TPOT_ms/token: " +
                  f"mean={_fmt_ms(float(np.mean(tpot)))}, p10={_fmt_ms(_pct(tpot, 10))}, p50={_fmt_ms(_pct(tpot, 50))}, p90={_fmt_ms(_pct(tpot, 90))}")
     lines.append("")
     return "\n".join(lines)
@@ -79,6 +82,43 @@ def summarize_metrics(res_list: List[SimulationResult]) -> str:
     return "\n".join(lines)
 
 
+def _summarize_group_data(name: str, reqs: list[Request], t_end: float):
+    n = len(reqs)
+    if n == 0:
+        return f"[{name}] finished=0\n"
+
+    lat = np.array([r.finish_time + r.accum_delay_time - r.arrival_time for r in reqs], dtype=float)
+    qd = np.array([r.start_time - r.arrival_time for r in reqs], dtype=float)
+    st = np.array([r.finish_time + r.accum_delay_time - r.start_time for r in reqs], dtype=float)
+    prompt = np.array([r.prompt_tokens for r in reqs], dtype=float)
+    gen_tgt = np.array([r.target_gen_tokens for r in reqs], dtype=float)
+    usr_throughput = np.array([r.target_gen_tokens/(r.finish_time + r.accum_delay_time - r.start_time)/1000 for r in reqs], dtype=float)
+    tpot = np.array([(r.finish_time + r.accum_delay_time - r.start_time) / r.target_gen_tokens for r in reqs], dtype=float)
+
+    # lines = []
+    # lines.append(f"[{name}] finished={n}, throughput={n / t_end:.6f} req/s")
+    # lines.append(f"  prompt_tokens mean={float(np.mean(prompt)):.3f}, p50={_pct(prompt, 50):.3f}, p95={_pct(prompt, 95):.3f}")
+    # lines.append(f"  target_gen_tokens mean={float(np.mean(gen_tgt)):.3f}, p50={_pct(gen_tgt, 50):.3f}, p95={_pct(gen_tgt, 95):.3f}")
+    # lines.append("  latency_ms: " +
+    #              f"mean={_fmt_ms(float(np.mean(lat)))}, p50={_fmt_ms(_pct(lat, 50))}, p95={_fmt_ms(_pct(lat, 95))}, p99={_fmt_ms(_pct(lat, 99))}")
+    # lines.append("  queueing_ms: " +
+    #              f"mean={_fmt_ms(float(np.mean(qd)))}, p50={_fmt_ms(_pct(qd, 50))}, p95={_fmt_ms(_pct(qd, 95))}, p99={_fmt_ms(_pct(qd, 99))}")
+    # lines.append("  service_ms: " +
+    #              f"mean={_fmt_ms(float(np.mean(st)))}, p50={_fmt_ms(_pct(st, 50))}, p95={_fmt_ms(_pct(st, 95))}, p99={_fmt_ms(_pct(st, 99))}")
+    # lines.append("  user_throughput_token/s: " +
+    #              f"mean={_fmt_ms(float(np.mean(usr_throughput)))}, p10={_fmt_ms(_pct(usr_throughput, 10))}, p50={_fmt_ms(_pct(usr_throughput, 50))}, p90={_fmt_ms(_pct(usr_throughput, 90))}")
+    # lines.append("  TPOT_ms/token: " +
+    #              f"mean={_fmt_ms(float(np.mean(tpot)))}, p10={_fmt_ms(_pct(tpot, 10))}, p50={_fmt_ms(_pct(tpot, 50))}, p90={_fmt_ms(_pct(tpot, 90))}")
+    # lines.append("")
+    # return "\n".join(lines)
+
+
+    # P90/95/99 latency
+    # return _fmt_ms(_pct(lat, 90))
+
+    # P90/95/99 TPOT
+    return _fmt_ms(_pct(tpot, 90))
+
 def summarize_metrics_data(res_list: List[SimulationResult]):
     # processed 包括 running 和 finished
     processed = []
@@ -107,4 +147,4 @@ def summarize_metrics_data(res_list: List[SimulationResult]):
     # lines.append("")
     # lines.append(_summarize_group("ALL", finished, float(t_end)))
 
-    return gen_tokens/t_end
+    return [gen_tokens/t_end, _summarize_group_data("ALL", finished, float(t_end))]

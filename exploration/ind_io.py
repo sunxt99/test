@@ -6,7 +6,7 @@ import json
 import pathlib
 
 from parallelism.pnode import Parallelism, XpTag
-from exploration.individual_v3 import Individual, Topology, TopologyNodeGene, Attrs, DeviceAssign
+from exploration.individual import Individual, Topology, TopologyNodeGene, Attrs, DeviceAssign
 
 
 def _enum_to_json(v: Any) -> Any:

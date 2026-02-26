@@ -246,6 +246,17 @@ class Individual:
     req_type_num: int
 
     fitness: Optional[float] = None
+
+    # Multi-objective metrics (v4: Pareto throughput-latency)
+    # objectives: (throughput, latency) where throughput is MAXIMIZED and latency is MINIMIZED.
+    throughput: Optional[float] = None
+    latency: Optional[float] = None
+    objectives: Optional[Tuple[float, float]] = None
+
+    # NSGA-II helpers
+    pareto_rank: Optional[int] = None  # 0 is best (non-dominated front)
+    crowding: float = 0.0
+
     uid: Optional[str] = None
 
     def check_legality(self) -> None:

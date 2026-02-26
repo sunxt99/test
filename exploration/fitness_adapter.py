@@ -33,6 +33,7 @@ class SystemEvaluatorV3:
     hcase_idx: int = 0
     base_case_idx_for_init: int = 3
     result_to_fitness: Callable[[List[Any]], float] = default_result_to_fitness
+    pareto_mode: bool = False
 
     def __post_init__(self) -> None:
         self.htree = HardwareTree(self.hcase_idx)
@@ -60,7 +61,7 @@ class SystemEvaluatorV3:
         # print(mapper)
         self.ptree.mapper = mapper
 
-    def run_system_on_root(self, root_node: Any) -> List[Any]:
+    def run_system_on_root(self, root_node: Any):
         self._override_ptree_with_root(root_node)
 
         original_lambda = self.sys_cfg.lam
@@ -85,20 +86,25 @@ class SystemEvaluatorV3:
         # return results
         return summarize_metrics_data(results)
 
-    def fitness(self, root_node: Any) -> float:
+    def fitness(self, root_node: Any) -> Any:
         # return float(self.result_to_fitness(self.run_system_on_root(root_node)))
-        return float(self.run_system_on_root(root_node))
+
+        if self.pareto_mode:
+            return self.run_system_on_root(root_node)
+        else:
+            return self.run_system_on_root(root_node)[0]
 
 
 def make_fitness_fn(
     sys_cfg: SystemConfig,
     model_cfg: ModelConfig,
     *,
+    pareto_mode: bool = False,
     req_prob: Sequence[float],
     hcase_idx: int = 0,
     base_case_idx_for_init: int = 3,
     result_to_fitness: Callable[[List[Any]], float] = default_result_to_fitness,
-) -> Callable[[Any], float]:
+) -> Callable[[Any], Any]:
     return SystemEvaluatorV3(
         sys_cfg=sys_cfg,
         model_cfg=model_cfg,
@@ -106,4 +112,5 @@ def make_fitness_fn(
         hcase_idx=hcase_idx,
         base_case_idx_for_init=base_case_idx_for_init,
         result_to_fitness=result_to_fitness,
+        pareto_mode=pareto_mode
     ).fitness

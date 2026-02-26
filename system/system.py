@@ -15,7 +15,7 @@ class System:
         # 0 1 2 测试例子，复杂但性能差；3 是 baseline；4 已超越 baseline；5 是简化例子
         pcase_idx = 4
         self.ptree = ParallelismTree(sys_cfg, model_cfg, self.htree, case_idx=pcase_idx)
-        self.req_prob = [0.8, 0.2]
+        self.req_prob = [0.5, 0.5]
 
     def run_system(self):
         # 每个 begin_nodes 都对应一个 simulator

@@ -14,7 +14,7 @@ from parallelism.pnode import (
     Parallelism,
     XpTag,
 )
-from exploration.individual_v3 import Individual, Topology
+from exploration.individual import Individual, Topology
 
 
 @dataclass(frozen=True)

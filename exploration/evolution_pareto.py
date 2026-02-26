@@ -11,16 +11,17 @@ from collections import deque
 
 from parallelism.pnode import Parallelism, XpTag
 
-from exploration.individual_v3 import (
+from exploration.individual import (
     Attrs,
     DeviceAssign,
     Individual,
     Topology,
     TopologyNodeGene,
 )
-from exploration.decoder_v3 import RootInit, try_decode_to_root
-from exploration.seed_from_pcase_v3 import individual_from_pcase_root
-from exploration.ind_io_v3 import print_individual
+
+from exploration.decoder import RootInit, try_decode_to_root
+from exploration.seed_from_pcase import individual_from_pcase_root
+from exploration.ind_io import print_individual
 
 
 @dataclass
@@ -234,11 +235,18 @@ def initialize_population(
         if root is None:
             continue
 
-        # ind.fitness = fitness_fn(root)
         try:
-            ind.fitness = fitness_fn(root)
+            res = fitness_fn(root)
+            thr, lat = _parse_objectives(res)
+            ind.throughput = thr
+            ind.latency = lat
+            ind.objectives = (thr, lat)
+            # keep scalar fitness for backward-compatible printing/sorting (throughput only)
+            ind.fitness = thr
         except Exception:
             continue
+
+
 
         ind.uid = canonical_key(ind)
         pop.append(ind)
@@ -279,7 +287,13 @@ def initialize_population_with_seeds(
             if root is None:
                 return
             try:
-                ind.fitness = fitness_fn(root)
+                res = fitness_fn(root)
+                thr, lat = _parse_objectives(res)
+                ind.throughput = thr
+                ind.latency = lat
+                ind.objectives = (thr, lat)
+                # keep scalar fitness for backward-compatible printing/sorting (throughput only)
+                ind.fitness = thr
             except Exception:
                 return
             ind.uid = canonical_key(ind)
@@ -314,10 +328,10 @@ def initialize_population_with_seeds(
             print("\n")
 
 
-    # If too many seeds, keep best N
+    # If too many seeds, keep best N (Pareto / NSGA-II environmental selection)
     if len(pop) > init_cfg.population_size:
-        pop.sort(key=lambda x: float("-inf") if x.fitness is None else x.fitness, reverse=True)
-        pop = pop[: init_cfg.population_size]
+        # compute ranks/crowding then select
+        pop = nsga2_environmental_select(pop, init_cfg.population_size)
         return pop
 
     # 3) Fill remaining using original random initializer
@@ -351,13 +365,161 @@ def initialize_population_with_seeds(
             if len(pop) >= init_cfg.population_size:
                 break
 
-    # final sort (optional)
-    pop.sort(key=lambda x: float("-inf") if x.fitness is None else x.fitness, reverse=True)
+    # final sort (optional): by Pareto rank then crowding (NSGA-II)
+    fronts = fast_nondominated_sort(pop)
+    for f in fronts:
+        crowding_distance(f)
+    pop.sort(key=lambda x: (10**9 if x.pareto_rank is None else x.pareto_rank, -x.crowding))
     return pop
 
+def _parse_objectives(fitness_result: Any) -> Tuple[float, float]:
+    """Parse evaluator output into (throughput, latency).
+
+    Supported formats:
+      - (throughput, latency)
+      - {"throughput": ..., "latency": ...} (case-insensitive keys are also accepted)
+      - {"tps": ..., "p95": ...} etc. (best-effort)
+      - a single float -> treated as throughput, latency=+inf (keeps backward compatibility)
+    """
+    if fitness_result is None:
+        raise ValueError("fitness_result is None")
+
+    # tuple/list
+    if isinstance(fitness_result, (tuple, list)) and len(fitness_result) >= 2:
+        thr = float(fitness_result[0])
+        lat = float(fitness_result[1])
+        return thr, lat
+
+    # dict
+    if isinstance(fitness_result, dict):
+        lower = {str(k).lower(): v for k, v in fitness_result.items()}
+
+        def pick(*names):
+            for n in names:
+                if n in lower:
+                    return lower[n]
+            return None
+
+        thr = pick("throughput", "tps", "qps", "req_s", "req_per_s", "requests_per_s")
+        lat = pick("latency", "p95_latency", "p99_latency", "p90_latency", "tail_latency", "p95", "p99", "lat_ms", "lat_s")
+
+        if thr is None or lat is None:
+            raise ValueError(f"Cannot parse objectives from dict keys={sorted(lower.keys())}")
+        return float(thr), float(lat)
+
+    # single number: old behavior (maximize this)
+    if isinstance(fitness_result, (int, float)):
+        return float(fitness_result), float("inf")
+
+    raise ValueError(f"Unsupported fitness_result type: {type(fitness_result)}")
+
+
+def dominates(a: Individual, b: Individual) -> bool:
+    """Return True if a Pareto-dominates b (maximize throughput, minimize latency)."""
+    if a.objectives is None or b.objectives is None:
+        return False
+    athr, alat = a.objectives
+    bthr, blat = b.objectives
+    return (athr >= bthr and alat <= blat) and (athr > bthr or alat < blat)
+
+
+def fast_nondominated_sort(pop: List[Individual]) -> List[List[Individual]]:
+    """NSGA-II fast non-dominated sorting. Assigns pareto_rank."""
+    S: Dict[str, List[Individual]] = {}
+    n: Dict[str, int] = {}
+    fronts: List[List[Individual]] = [[]]
+
+    for p in pop:
+        S[p.uid] = []
+        n[p.uid] = 0
+        for q in pop:
+            if p is q:
+                continue
+            if dominates(p, q):
+                S[p.uid].append(q)
+            elif dominates(q, p):
+                n[p.uid] += 1
+        if n[p.uid] == 0:
+            p.pareto_rank = 0
+            fronts[0].append(p)
+
+    i = 0
+    while i < len(fronts) and fronts[i]:
+        next_front: List[Individual] = []
+        for p in fronts[i]:
+            for q in S[p.uid]:
+                n[q.uid] -= 1
+                if n[q.uid] == 0:
+                    q.pareto_rank = i + 1
+                    next_front.append(q)
+        i += 1
+        if next_front:
+            fronts.append(next_front)
+    return fronts
+
+
+def crowding_distance(front: List[Individual]) -> None:
+    """Compute NSGA-II crowding distance in-place for a front."""
+    if not front:
+        return
+    for p in front:
+        p.crowding = 0.0
+
+    # Objective 0: throughput (max)
+    # Objective 1: latency (min)  -> treat as negative for sorting so "larger is better" is consistent? 
+    # We'll implement separately with correct normalization.
+    thr_vals = [p.objectives[0] for p in front]  # type: ignore[index]
+    lat_vals = [p.objectives[1] for p in front]  # type: ignore[index]
+
+    # Throughput (ascending for distance calc)
+    order = sorted(range(len(front)), key=lambda i: thr_vals[i])
+    front[order[0]].crowding = float("inf")
+    front[order[-1]].crowding = float("inf")
+    thr_min, thr_max = thr_vals[order[0]], thr_vals[order[-1]]
+    denom = (thr_max - thr_min) if thr_max != thr_min else 1.0
+    for j in range(1, len(order) - 1):
+        i_prev, i_next, i_cur = order[j - 1], order[j + 1], order[j]
+        front[i_cur].crowding += (thr_vals[i_next] - thr_vals[i_prev]) / denom
+
+    # Latency (ascending: smaller is better)
+    order = sorted(range(len(front)), key=lambda i: lat_vals[i])
+    front[order[0]].crowding = float("inf")
+    front[order[-1]].crowding = float("inf")
+    lat_min, lat_max = lat_vals[order[0]], lat_vals[order[-1]]
+    denom = (lat_max - lat_min) if lat_max != lat_min else 1.0
+    for j in range(1, len(order) - 1):
+        i_prev, i_next, i_cur = order[j - 1], order[j + 1], order[j]
+        # For latency, larger normalized gap means more isolated => bigger crowding (still good)
+        front[i_cur].crowding += (lat_vals[i_next] - lat_vals[i_prev]) / denom
+
+
+def nsga2_environmental_select(pop: List[Individual], N: int) -> List[Individual]:
+    """Select next generation of size N from pop (already evaluated)."""
+    fronts = fast_nondominated_sort(pop)
+    next_pop: List[Individual] = []
+    for f in fronts:
+        crowding_distance(f)
+        if len(next_pop) + len(f) <= N:
+            next_pop.extend(f)
+        else:
+            # sort by crowding descending
+            f_sorted = sorted(f, key=lambda x: x.crowding, reverse=True)
+            next_pop.extend(f_sorted[: max(0, N - len(next_pop))])
+            break
+    return next_pop
+
+
 def tournament_select(pop: List[Individual], k: int) -> Individual:
+    """Binary tournament on (pareto_rank asc, crowding desc)."""
     cand = random.sample(pop, k=min(k, len(pop)))
-    return max(cand, key=lambda x: float('-inf') if x.fitness is None else x.fitness)
+    # Ensure ranks/crowding exist
+    return min(
+        cand,
+        key=lambda x: (
+            10**9 if x.pareto_rank is None else x.pareto_rank,
+            -float("inf") if x.crowding is None else -x.crowding,
+        ),
+    )
 
 
 def numeric_mutation(ind: Individual, cfg: EvoConfig, init_cfg: InitConfig) -> Individual:
@@ -677,7 +839,7 @@ def evolve(
             strict_device_partition=True,
         )
 
-    cache: Dict[str, float] = {}
+    cache: Dict[str, Tuple[float, float]] = {}
 
     def eval_ind(ind: Individual) -> Optional[Individual]:
         try:
@@ -691,80 +853,106 @@ def evolve(
         key = canonical_key(ind)
         ind.uid = key
         if evo_cfg.enable_cache and key in cache:
-            ind.fitness = cache[key]
+            thr, lat = cache[key]
+            ind.throughput = thr
+            ind.latency = lat
+            ind.objectives = (thr, lat)
+            ind.fitness = thr
             return ind
         root = try_decode_to_root(ind, root_init, attach_hardware_leaves=attach_hardware_leaves)
         if root is None:
             return None
 
-        # ind.fitness = fitness_fn(root)
         try:
-            ind.fitness = fitness_fn(root)
+            res = fitness_fn(root)
+            thr, lat = _parse_objectives(res)
+            if (not math.isfinite(thr)) or (not math.isfinite(lat)):
+                return None
+            ind.throughput = thr
+            ind.latency = lat
+            ind.objectives = (thr, lat)
+            # keep scalar fitness for backward-compatible printing/sorting (throughput only)
+            ind.fitness = thr
+
         except Exception:
             # fitness 阶段报错（含 ValueError），视为 invalid 个体丢弃
             return None
 
         if evo_cfg.enable_cache:
-            cache[key] = ind.fitness
+            cache[key] = (float(ind.throughput), float(ind.latency))
         return ind
 
     # 默认每代新产生 population_size - elite_size 个 offspring
-    offspring_target = evo_cfg.offspring_size or (init_cfg.population_size - evo_cfg.elite_size)
+    offspring_target = evo_cfg.offspring_size or init_cfg.population_size
     attempt_limit = evo_cfg.max_attempt_factor * max(1, offspring_target)
 
     # 每一代主要做四件事：排序 → 精英保留 → 生成 offspring → 更新种群
     for _gen in range(evo_cfg.generations):
         print("gen:", _gen)
-        # fitness 越大越好；精英直接原样进入下一代
-        pop.sort(key=lambda x: float('-inf') if x.fitness is None else x.fitness, reverse=True)
-        elites = pop[:evo_cfg.elite_size]
 
+        # 1) Assign Pareto rank + crowding distance for current population
+        fronts = fast_nondominated_sort(pop)
+        for f in fronts:
+            crowding_distance(f)
+
+        if fronts and fronts[0]:
+            # Print a quick snapshot of the current Pareto front (top few by throughput)
+            snap = sorted(fronts[0], key=lambda x: float('-inf') if x.throughput is None else x.throughput, reverse=True)[:5]
+            print("  front0 size:", len(fronts[0]), " snapshot:", [(x.throughput, x.latency) for x in snap])
+
+        # 2) Create offspring
         offspring: List[Individual] = []
         seen: set[str] = set()
         attempts = 0
 
-        # 循环生成 offspring
         while len(offspring) < offspring_target and attempts < attempt_limit:
             attempts += 1
-            # 选择父代，锦标赛选择：从 pop 随机抽 k 个，取 fitness 最大的那个。k 越大选择压力越强。
             parent = tournament_select(pop, evo_cfg.tournament_k)
 
             r = random.random()
             if r < evo_cfg.p_topology_mut:
-                # topology_mutation：改树结构（加/删某个节点的一个并行子树），然后必须：
-                # 1. 重新做 device partition（因为 leaf 集合可能变了）
-                # 2. 重新生成 attrs（因为 leaf 有效 arity 变了）
                 child = topology_mutation(parent, evo_cfg, init_cfg, devices=devices_list)
-            # else:
-            #     numeric_mutation：不改结构，只对 attrs 做“乘性噪声”扰动（DP/PP/TP）或 XP tag 交换等
-                # child = numeric_mutation(parent, evo_cfg, init_cfg)
             elif r < evo_cfg.p_topology_mut + evo_cfg.p_device_mut:
                 child = device_mutation(parent)
             else:
                 child = numeric_mutation(parent, evo_cfg, init_cfg)
-            # 评估 child（合法性 + decode + fitness）
+
             child2 = eval_ind(child)
-            if child2 is None or child2.uid is None:
+            if child2 is None or child2.uid is None or child2.objectives is None:
                 continue
-            # 去重（按 uid）
             if child2.uid in seen:
                 continue
-            if math.isnan(child2.fitness):
+            if child2.throughput is None or child2.latency is None:
+                continue
+            if math.isnan(child2.throughput) or math.isnan(child2.latency):
                 continue
 
             seen.add(child2.uid)
             offspring.append(child2)
 
-            print(child2.uid, child2.fitness)
-
-        # offspring 不够时，用旧种群补齐
-        # 即，如果因为丢弃太多导致 offspring 产量不足，就从上一代非精英里随机抽一些填充，避免种群规模缩水。
+        # If offspring not enough, pad with random individuals from current pop
         if len(offspring) < offspring_target:
-            pool = pop[evo_cfg.elite_size:]
+            pool = pop
             if pool:
                 offspring.extend(random.sample(pool, k=min(offspring_target - len(offspring), len(pool))))
 
-        pop = elites + offspring
+        # 3) Environmental selection (NSGA-II): parents + offspring -> next generation
+        pop = nsga2_environmental_select(pop + offspring, init_cfg.population_size)
+    # Final: compute Pareto info and return a representative "best" + the final population
+    fronts = fast_nondominated_sort(pop)
+    for f in fronts:
+        crowding_distance(f)
 
-    pop.sort(key=lambda x: float('-inf') if x.fitness is None else x.fitness, reverse=True)
-    return pop[0], pop
+    # Choose representative best: highest-throughput solution on the first Pareto front.
+    if fronts and fronts[0]:
+        best = max(fronts[0], key=lambda x: float('-inf') if x.throughput is None else x.throughput)
+    else:
+        # fallback
+        best = max(pop, key=lambda x: float('-inf') if x.fitness is None else x.fitness)
+
+    # Sort population for readability (rank asc, then throughput desc)
+    pop.sort(key=lambda x: (
+        10**9 if x.pareto_rank is None else x.pareto_rank,
+        float('-inf') if x.throughput is None else -x.throughput,
+    ))
+    return best, pop
