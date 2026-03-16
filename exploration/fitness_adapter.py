@@ -61,38 +61,39 @@ class SystemEvaluatorV3:
         # print(mapper)
         self.ptree.mapper = mapper
 
-    def run_system_on_root(self, root_node: Any):
+    def run_system_on_root(self, root_node: Any, batch_size: int = 1):
         self._override_ptree_with_root(root_node)
 
         original_lambda = self.sys_cfg.lam
         results: List[Any] = []
 
         for begin_node in self.ptree.begin_nodes:
-            sim_cfg = deepcopy(self.sys_cfg)
+            this_sys_cfg = deepcopy(self.sys_cfg)
             sub_batch_num = self.ptree.summarise_layer_info(begin_node)
-            sim_cfg.sub_batch_num = sub_batch_num
-            sim_cfg.use_pp_sub_batch = True
-            sim_cfg.use_mp_sub_batch = True
+            this_sys_cfg.sub_batch_num = sub_batch_num
+            this_sys_cfg.use_pp_sub_batch = True
+            this_sys_cfg.use_mp_sub_batch = True
+            this_sys_cfg.max_batch_lo = batch_size
 
             this_lambda = sum(
                 [(dp_attr[1] - dp_attr[0]) * prob * original_lambda
                  for dp_attr, prob in zip(begin_node.dp_attr, self.req_prob)]
             )
-            sim_cfg.lam = this_lambda
+            this_sys_cfg.lam = this_lambda
 
-            simulator = Simulator(sim_cfg, self.model_cfg, self.req_prob, self.ptree)
+            simulator = Simulator(this_sys_cfg, self.model_cfg, self.req_prob, self.ptree)
             results.append(simulator.run(begin_node))
 
         # return results
         return summarize_metrics_data(results)
 
-    def fitness(self, root_node: Any) -> Any:
+    def fitness(self, root_node: Any, batch_size: int = 1) -> Any:
         # return float(self.result_to_fitness(self.run_system_on_root(root_node)))
 
         if self.pareto_mode:
-            return self.run_system_on_root(root_node)
+            return self.run_system_on_root(root_node, batch_size)
         else:
-            return self.run_system_on_root(root_node)[0]
+            return self.run_system_on_root(root_node, batch_size)[0]
 
 
 def make_fitness_fn(

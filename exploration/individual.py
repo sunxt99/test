@@ -245,6 +245,7 @@ class Individual:
     devices: List[int]
     req_type_num: int
 
+    batch_size: int = 1
     fitness: Optional[float] = None
 
     # Multi-objective metrics (v4: Pareto throughput-latency)

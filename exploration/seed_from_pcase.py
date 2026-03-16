@@ -56,6 +56,7 @@ def individual_from_pcase_root(
     *,
     devices: Sequence[int],
     req_type_num: int,
+    batch_size: int = 1,
     strict_device_partition: bool = True,
 ) -> Individual:
     """
@@ -168,6 +169,7 @@ def individual_from_pcase_root(
         attrs=attrs,
         devices=dev_list,
         req_type_num=req_type_num,
+        batch_size=int(batch_size),
     )
     # validate shapes/constraints (will also enforce strict partition if enabled at Individual level)
     ind.check_legality()

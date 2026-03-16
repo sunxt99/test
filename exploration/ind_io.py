@@ -56,6 +56,7 @@ def format_individual(
         lines.append(f"fitness: {ind.fitness}")
     lines.append(f"req_type_num: {ind.req_type_num}")
     lines.append(f"devices: {list(ind.devices)}")
+    lines.append(f"batch_size: {getattr(ind, 'batch_size', None)}")
     lines.append("")
 
     def node_header(nid: int) -> str:
@@ -129,6 +130,7 @@ def individual_to_dict(ind: Individual) -> Dict[str, Any]:
         "fitness": ind.fitness,
         "devices": list(ind.devices),
         "req_type_num": ind.req_type_num,
+        "batch_size": getattr(ind, "batch_size", 1),
         "topology": [
             {
                 "node_id": g.node_id,
@@ -183,6 +185,7 @@ def individual_from_dict(data: Dict[str, Any]) -> Individual:
         attrs=attrs,
         devices=list(data["devices"]),
         req_type_num=int(data["req_type_num"]),
+        batch_size=int(data.get("batch_size", 1)),
     )
     ind.uid = data.get("uid")
     ind.fitness = data.get("fitness")

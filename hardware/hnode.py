@@ -130,3 +130,10 @@ class HwUnit(HwNode):
         mem_bw = self.meta.get("bw")
         return max(comp_ops / (comp_perf*pow(10,12)) * pow(10,3),
                    mem_ops / (mem_bw*pow(10,12)) * pow(10,3))
+
+if __name__ == "__main__":
+    npu_test = HwUnit(idx=0, name="npu", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
+    # pim_test = HwUnit(idx=0, name="pim", meta={"type": "PIM", "flops": 16, "bw": 16, "byte": 2})
+    pim_test = HwUnit(idx=0, name="pim", meta={"type": "PIM", "flops": 128, "bw": 16, "byte": 2})
+    print(npu_test.compute_gemm_time_cost(256, 2048, 2048))
+    print(pim_test.compute_gemm_time_cost(256, 2048, 2048))

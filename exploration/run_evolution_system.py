@@ -1,16 +1,17 @@
 # run_evolution_system_v3.py
 from __future__ import annotations
-
-from typing import Any, List, Sequence
 import argparse
+import json
+import os
+from typing import Any, List, Sequence
 
 from system.config import SystemConfig, ModelConfig
 
 from exploration.decoder import RootInit
 
-pareto_mode = False
+pareto_mode = True
 if pareto_mode:
-    from exploration.evolution_pareto import InitConfig, EvoConfig, evolve
+    from exploration.evolution_pareto_improved import InitConfig, EvoConfig, evolve
 else:
     from exploration.evolution import InitConfig, EvoConfig, evolve
 
@@ -20,6 +21,7 @@ from exploration.ind_io import print_individual, save_individual_json, load_indi
 from parallelism.pcase import (
     build_case_0, build_case_1, build_case_2, build_case_3, build_case_4,
     build_case_5, build_case_6, build_case_7, build_case_8, build_case_9,
+    build_case_10, build_case_11, build_case_12
 )
 
 
@@ -52,6 +54,7 @@ def parse_args():
     # Capacity controls
     p.add_argument("--max-batch-hi", type=int, default=32,
                    help="Max batch size when priority exists (preempt mode). Default 16.")
+    #TODO:实际上目前Pareto中会自主搜索batch size，所以这个参数是用不到的
     p.add_argument("--max-batch-lo", type=int, default=128,
                    help="Max batch size when NO priority exists; also total cap in reserve mode. Default 256.")
     p.add_argument("--reserve-hi", type=int, default=32,
@@ -66,6 +69,7 @@ def parse_args():
     # Debug and Logging
     p.add_argument("--seed", type=int, default=0, help="Random seed.")
     p.add_argument("--verbose", action="store_true", help="Print verbose logs.")
+    p.add_argument("--out", type=str, default=None, help="Output file path")
 
     return p.parse_args()
 
@@ -109,7 +113,12 @@ def main() -> None:
     init_cfg = InitConfig(population_size=30,
                           max_depth=4,
                           max_children=8,
-                          p_stop_expand=0.40)
+                          p_stop_expand=0.40,
+                          batch_size_choices=(1,2,4,8,16,32,64,128,196,256,384,512))  # model0
+                          # batch_size_choices=(1,2,4,8,16,32,48,64,96,128,160,196)) # model1
+                          # batch_size_choices=(1,2,4,8,16,32,48,64,96,128,160,196)) # model2
+                          # batch_size_choices=(1,2,4,8,16,32,48,64))  # model2 and lam2
+                          # batch_size_choices=(1,2,4,8,16,32,48,64,96,112,128)) # model3
 
     evo_cfg = EvoConfig(generations=4,
                         #generations=20,
@@ -134,9 +143,13 @@ def main() -> None:
         7: build_case_7,
         8: build_case_8,
         9: build_case_9,
+        10: build_case_10,
+        11: build_case_11,
+        12: build_case_12,
     }
-    pop_seed_indexes = [4]
-    # pop_seed_indexes = []
+    # pop_seed_indexes = [1,2,3,4]
+    # pop_seed_indexes = [3,4]
+    pop_seed_indexes = [3]
     pop_seed_roots = []
     for i in pop_seed_indexes:
         if i not in builders:
@@ -159,16 +172,31 @@ def main() -> None:
         random_seed=42,
     )
 
-    print("\n Best")
+    # Dump Pareto front (rank-0) objectives to jsonl if requested
+    if args.out:
+        if os.path.exists(args.out):
+            os.remove(args.out)
+
+        pareto_front = [ind for ind in pop if getattr(ind, "pareto_rank", None) == 0]
+        for ind in pareto_front:
+            if getattr(ind, "objectives", None) is None:
+                continue
+            T, L = float(ind.objectives[0]), float(ind.objectives[1])
+            with open(args.out, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"T": T, "L": L}, ensure_ascii=False) + "\n")
+
+    # print("\n Best")
     # print("Best fitness:", best.fitness)
+    # print("Best Throughput:", best.throughput)
+    # print("Best Latency:", best.latency)
     # print("Best uid:", best.uid)
     # print(best.topology.nodes)
-    print("dp_attr:", best.attrs.dp_attr)
-    print("pp_attr:", best.attrs.pp_attr)
-    print("tp_attr:", best.attrs.tp_attr)
-    print("xp_attr:", best.attrs.xp_attr)
+    # print("dp_attr:", best.attrs.dp_attr)
+    # print("pp_attr:", best.attrs.pp_attr)
+    # print("tp_attr:", best.attrs.tp_attr)
+    # print("xp_attr:", best.attrs.xp_attr)
     # print(best.device_assign.leaf_to_devices)
-    print("\n")
+    # print("\n")
 
     # print example
     print_individual(best)

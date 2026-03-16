@@ -43,8 +43,8 @@ def _summarize_group(name: str, reqs: list[Request], t_end: float) -> str:
                  f"mean={_fmt_ms(float(np.mean(st)))}, p50={_fmt_ms(_pct(st, 50))}, p95={_fmt_ms(_pct(st, 95))}, p99={_fmt_ms(_pct(st, 99))}")
     lines.append("  user_throughput_token/s: " +
                  f"mean={_fmt_ms(float(np.mean(usr_throughput)))}, p10={_fmt_ms(_pct(usr_throughput, 10))}, p50={_fmt_ms(_pct(usr_throughput, 50))}, p90={_fmt_ms(_pct(usr_throughput, 90))}")
-    lines.append("  TPOT_ms/token: " +
-                 f"mean={_fmt_ms(float(np.mean(tpot)))}, p10={_fmt_ms(_pct(tpot, 10))}, p50={_fmt_ms(_pct(tpot, 50))}, p90={_fmt_ms(_pct(tpot, 90))}")
+    lines.append("  TPOT_ms: " +
+                 f"mean={_fmt_ms(float(np.mean(tpot)))}, p90={_fmt_ms(_pct(tpot, 90))}, p95={_fmt_ms(_pct(tpot, 95))}, p99={_fmt_ms(_pct(tpot, 99))}")
     lines.append("")
     return "\n".join(lines)
 
@@ -67,13 +67,15 @@ def summarize_metrics(res_list: List[SimulationResult]) -> str:
     # prio = [r for r in finished if getattr(r, "is_priority", False)]
     # normal = [r for r in finished if not getattr(r, "is_priority", False)]
 
-    gen_tokens = np.sum([r.gen_tokens for r in processed], dtype=float)
+    gen_tokens = [r.gen_tokens for r in processed]
+    total_gen_tokens = np.sum(gen_tokens)
 
     lines = []
     lines.append("=== Simulation Summary ===")
     lines.append(f"horizon={t_end:.6f}s, busy_time={busy_time:.6f}s, utilization={util:.6f}")
     lines.append(f"finished_total={finished_num}, throughput_total={finished_num / t_end:.6f} req/s")
-    lines.append(f"throughput={gen_tokens/t_end} token/s")
+    lines.append(f"mean_gen_tokens={np.mean(gen_tokens)} token")
+    lines.append(f"throughput={total_gen_tokens/t_end} token/s")
     lines.append("")
     lines.append(_summarize_group("ALL", finished, float(t_end)))
     # lines.append(_summarize_group("PRIORITY", prio, float(t_end)))
@@ -107,7 +109,7 @@ def _summarize_group_data(name: str, reqs: list[Request], t_end: float):
     #              f"mean={_fmt_ms(float(np.mean(st)))}, p50={_fmt_ms(_pct(st, 50))}, p95={_fmt_ms(_pct(st, 95))}, p99={_fmt_ms(_pct(st, 99))}")
     # lines.append("  user_throughput_token/s: " +
     #              f"mean={_fmt_ms(float(np.mean(usr_throughput)))}, p10={_fmt_ms(_pct(usr_throughput, 10))}, p50={_fmt_ms(_pct(usr_throughput, 50))}, p90={_fmt_ms(_pct(usr_throughput, 90))}")
-    # lines.append("  TPOT_ms/token: " +
+    # lines.append("  TPOT_ms: " +
     #              f"mean={_fmt_ms(float(np.mean(tpot)))}, p10={_fmt_ms(_pct(tpot, 10))}, p50={_fmt_ms(_pct(tpot, 50))}, p90={_fmt_ms(_pct(tpot, 90))}")
     # lines.append("")
     # return "\n".join(lines)
@@ -117,7 +119,7 @@ def _summarize_group_data(name: str, reqs: list[Request], t_end: float):
     # return _fmt_ms(_pct(lat, 90))
 
     # P90/95/99 TPOT
-    return _fmt_ms(_pct(tpot, 90))
+    return float(_fmt_ms(_pct(tpot, 99)))
 
 def summarize_metrics_data(res_list: List[SimulationResult]):
     # processed 包括 running 和 finished

@@ -1,9 +1,11 @@
 import argparse
 import time
+import os
+import json
 
 from system.system import System
 from system.config import SystemConfig, ModelConfig
-from system.metrics import summarize_metrics
+from system.metrics import summarize_metrics, summarize_metrics_data
 
 MODEL_CONFIGS = {
     0: ModelConfig("llama3-8B", 4096, 32, 8, 14336, 32),
@@ -18,21 +20,24 @@ def parse_args():
     # Model
     p.add_argument("--model-index", type = int, required=True, help="The index of the model to run.")
 
-    # Request
-    p.add_argument("--req-type-num", type=int, required=True, help="Number of the type of requests.")
-    p.add_argument("--lam", type=float, required=True, help="Arrival rate (req/s).")
+    # run time
     p.add_argument("--t-end", type=float, required=True, help="Simulation end time horizon (s).")
 
+    # Request
+    p.add_argument("--req-type-num", type=int, required=True, help="Number of the type of requests.")
+    # p.add_argument("--lam", type=float, required=True, help="Arrival rate (req/s).")
+    p.add_argument("--lam", type=float, default=100, help="Arrival rate (req/s).")
+
     # QoS / Priority
-    p.add_argument("--priority-ratio", type=float, default=0.05, help="Fraction of priority requests (default 0.05).")
+    p.add_argument("--priority-ratio", type=float, default=0.0, help="Fraction of priority requests (default 0.05).")
     p.add_argument("--mode", type=str, choices=["preempt", "reserve"], default="preempt",
                    help="QoS mode: preempt (shrink to max-batch-hi when priority exists) or reserve (reserve slots for priority).")
 
     # Capacity controls
+    p.add_argument("--max-batch-lo", type=int, default=512,
+                   help="Max batch size when NO priority exists; also total cap in reserve mode. Default 256.")
     p.add_argument("--max-batch-hi", type=int, default=32,
                    help="Max batch size when priority exists (preempt mode). Default 16.")
-    p.add_argument("--max-batch-lo", type=int, default=128,
-                   help="Max batch size when NO priority exists; also total cap in reserve mode. Default 256.")
     p.add_argument("--reserve-hi", type=int, default=32,
                    help="Reserved slots for priority in reserve mode (reduces normal concurrency). Default 16.")
 
@@ -45,6 +50,7 @@ def parse_args():
     # Debug and Logging
     p.add_argument("--seed", type=int, default=0, help="Random seed.")
     p.add_argument("--verbose", action="store_true", help="Print verbose logs.")
+    p.add_argument("--out", type=str, default=None, help="Output file path")
 
     return p.parse_args()
 
@@ -73,7 +79,14 @@ def main():
 
     system = System(sys_cfg, model_cfg)
     result = system.run_system()
+
     print(summarize_metrics(result))
+    T, L = summarize_metrics_data(result)
+    # print("Throughput:", T,
+    #       "P99 TPOT:", L)
+    if args.out:
+        with open(args.out, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"T":T, "L":L}, ensure_ascii=False) + "\n")
 
     end_t = time.perf_counter()
     print(f"Elapsed: {end_t - start_t:.6f}s")

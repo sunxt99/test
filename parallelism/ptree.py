@@ -39,6 +39,11 @@ class ParallelismTree:
             7: build_case_7,
             8: build_case_8,
             9: build_case_9,
+            10: build_case_10,
+            11: build_case_11,
+            12: build_case_12,
+            13: build_case_13,
+            14: build_case_14,
         }
         try:
             build_fn = BUILD_CASES[case_idx]
@@ -190,6 +195,7 @@ class ParallelismTree:
                                                                                    req_type_distribution)
                     # module_time_cost_ms = max(computation_time_cost_ms, communication_time_cost_ms)
                     module_time_cost_ms = computation_time_cost_ms + communication_time_cost_ms
+                    # print(computation_time_cost_ms, communication_time_cost_ms)
                     # layer_idx = 0 和 module_idx = 0 的情况不能记录进 cache，否则后面的 tp 都没有了
                     if layer_idx != 0 or module_idx != 0:
                         result_cache[module_idx][frozenset(module_active_leaf_indexes)] = module_time_cost_ms
@@ -247,10 +253,11 @@ class ParallelismTree:
                 previous_leaf_list = []
             # 考虑 MP 且该层有 MP 参与，当前层不等于前层，说明遇到新的 double sub batch
             elif current_leaf_list != previous_leaf_list:
+                mp_fix_factor = 1.9
                 first_double_sub_batch_time_ms = (layer_qkv_time_ms[layer_idx] +
                                                   max(layer_qkv_time_ms[layer_idx], layer_attn_time_ms[layer_idx]) +
                                                   max(layer_proj_time_ms[layer_idx] + layer_ffn_time_ms[layer_idx], layer_attn_time_ms[layer_idx]) +
-                                                  layer_proj_time_ms[layer_idx] + layer_ffn_time_ms[layer_idx]) / 2
+                                                  layer_proj_time_ms[layer_idx] + layer_ffn_time_ms[layer_idx]) / mp_fix_factor
                 if use_pp_sub_batch:
                     for leaf_idx in current_leaf_list:
                         execution_time_of_leafs_ms[leaf_idx] += first_double_sub_batch_time_ms
@@ -258,8 +265,9 @@ class ParallelismTree:
                 previous_leaf_list = current_leaf_list
             # 考虑 MP 且该层有 MP 参与，当前层等于前层，说明未遇到新的 double sub batch
             else: # when current_leaf_list == previous_leaf_list:
+                mp_fix_factor = 1.9
                 next_double_sub_batch_time_ms = 2 * max(layer_qkv_time_ms[layer_idx] + layer_proj_time_ms[layer_idx] + layer_ffn_time_ms[layer_idx],
-                                                        layer_attn_time_ms[layer_idx]) / 2
+                                                        layer_attn_time_ms[layer_idx]) / mp_fix_factor
                 if use_pp_sub_batch:
                     for leaf_idx in current_leaf_list:
                         execution_time_of_leafs_ms[leaf_idx] += next_double_sub_batch_time_ms
