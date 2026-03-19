@@ -62,7 +62,7 @@ def main() -> None:
         pareto_mode=True,
         req_prob=req_prob,
         hcase_idx=0,
-        base_case_idx_for_init=3,
+        pcase_idx_for_init=3,
         result_to_fitness=result_to_fitness,
     )
 

@@ -244,8 +244,6 @@ def initialize_population(
             ind.throughput = thr
             ind.latency = lat
             ind.objectives = (thr, lat)
-            # keep scalar fitness for backward-compatible printing/sorting (throughput only)
-            ind.fitness = thr
         except Exception:
             continue
 
@@ -293,8 +291,6 @@ def initialize_population_with_seeds(
                 ind.throughput = thr
                 ind.latency = lat
                 ind.objectives = (thr, lat)
-                # keep scalar fitness for backward-compatible printing/sorting (throughput only)
-                ind.fitness = thr
             except Exception:
                 return
             ind.uid = canonical_key(ind)
@@ -302,7 +298,7 @@ def initialize_population_with_seeds(
                 return
             seen.add(ind.uid)
             pop.append(ind)
-            print("seed:", ind.uid, ind.fitness)
+            print("seed:", ind.uid, ind.throughput, ind.latency)
         except Exception:
             return
 
@@ -1016,15 +1012,14 @@ def evolve(
 ) -> Tuple[Individual, List[Individual]]:
     '''
     # 该函数的关键行为/隐含假设
-    # 1. fitness 越大越好（排序是 reverse=True）
-    # 2. 丢弃策略：任何非法/解码失败/仿真失败就扔掉（不会修复）
-    # 3. v3 的关键约束落点在：
+    # 1. 丢弃策略：任何非法/解码失败/仿真失败就扔掉（不会修复）
+    # 2. v3 的关键约束落点在：
     #   sample_device_assign()：devices 被 partition 给 leaf
     #   sample_attrs()：leaf 的 arity = device_group_size
     #   check_legality()：保证 attrs shape 与这个 arity 一致
     #   这样 ptraversal 在 leaf→HW 边上调用 derive_child_info 不会越界
-    # 4. 缓存：相同 uid 的个体不会重复跑仿真，能省很多时间（仿真很贵，这点很关键）
-    # 5. attempt_limit：防止“丢弃太多导致卡死”
+    # 3. 缓存：相同 uid 的个体不会重复跑仿真，能省很多时间（仿真很贵，这点很关键）
+    # 4. attempt_limit：防止“丢弃太多导致卡死”
     '''
 
 
@@ -1073,7 +1068,6 @@ def evolve(
             ind.throughput = thr
             ind.latency = lat
             ind.objectives = (thr, lat)
-            ind.fitness = thr
             return ind
         root = try_decode_to_root(ind, root_init, attach_hardware_leaves=attach_hardware_leaves)
         if root is None:
@@ -1086,8 +1080,6 @@ def evolve(
             ind.throughput = thr
             ind.latency = lat
             ind.objectives = (thr, lat)
-            # keep scalar fitness for backward-compatible printing/sorting (throughput only)
-            ind.fitness = thr
 
             with open("./result/DSE.jsonl", "a", encoding="utf-8") as f:
                 f.write(json.dumps({"T": thr, "L": lat}, ensure_ascii=False) + "\n")
@@ -1188,7 +1180,7 @@ def evolve(
         best = max(fronts[0], key=lambda x: float('-inf') if x.throughput is None else x.throughput)
     else:
         # fallback
-        best = max(pop, key=lambda x: float('-inf') if x.fitness is None else x.fitness)
+        best = max(pop, key=lambda x: float('-inf') if x.throughput is None else x.throughput)
 
     # Sort population for readability (rank asc, then throughput desc)
     pop.sort(key=lambda x: (

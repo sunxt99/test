@@ -17,7 +17,6 @@ from parallelism.pnode import BasicHardwareNode
 
 Number = Union[int, float]
 
-
 def default_result_to_fitness(sim_results: List[Any]) -> float:
     # smaller is better
     if not sim_results:
@@ -32,20 +31,20 @@ class SystemEvaluatorV3:
     model_cfg: ModelConfig
     req_prob: Sequence[float]
     hcase_idx: int = 0
-    base_case_idx_for_init: int = 3
+    pcase_idx_for_init: int = 3
     result_to_fitness: Callable[[List[Any]], float] = default_result_to_fitness
     pareto_mode: bool = False
 
     def __post_init__(self) -> None:
         self.htree = HardwareTree(self.hcase_idx)
-        self.ptree = ParallelismTree(self.sys_cfg, self.model_cfg, self.htree, case_idx=self.base_case_idx_for_init)
+        self.ptree = ParallelismTree(self.sys_cfg, self.model_cfg, self.htree, case_idx=self.pcase_idx_for_init)
         self._dev_by_idx = {getattr(d, "idx", i): d for i, d in enumerate(self.htree.devices)}
         # print(self._dev_by_idx)
 
     def _override_ptree_with_root(self, root_node: Any) -> None:
         # IMPORTANT: derive_from_node() will call derive_child_info on *all* parallel nodes,
-        # including leaf-parallel -> hardware edges. In v3, leaf parallel nodes have parallel_attr
-        # sized to their device-group, so this is safe.
+        # including leaf-parallel -> hardware edges.
+        # In v3, leaf parallel nodes have parallel_attr sized to their device-group, so this is safe.
         self.ptree.root_node = root_node
         self.ptree.begin_nodes = list(detect_begin_nodes(root_node))
         leaf_nodes = derive_from_node(root_node)
@@ -110,7 +109,7 @@ def make_fitness_fn(
     pareto_mode: bool = True,
     req_prob: Sequence[float],
     hcase_idx: int = 0,
-    base_case_idx_for_init: int = 3,
+    pcase_idx_for_init: int = 3,
     result_to_fitness: Callable[[List[Any]], float] = default_result_to_fitness,
 ) -> Callable[[Any, int], Any]:
     return SystemEvaluatorV3(
@@ -118,7 +117,7 @@ def make_fitness_fn(
         model_cfg=model_cfg,
         req_prob=req_prob,
         hcase_idx=hcase_idx,
-        base_case_idx_for_init=base_case_idx_for_init,
+        pcase_idx_for_init=pcase_idx_for_init,
         result_to_fitness=result_to_fitness,
         pareto_mode=pareto_mode
     ).fitness

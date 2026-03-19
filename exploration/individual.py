@@ -246,7 +246,6 @@ class Individual:
     req_type_num: int
 
     batch_size: int = 1
-    fitness: Optional[float] = None
 
     # Multi-objective metrics (v4: Pareto throughput-latency)
     # objectives: (throughput, latency) where throughput is MAXIMIZED and latency is MINIMIZED.

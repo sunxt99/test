@@ -53,7 +53,7 @@ def format_individual(
 
     if show_fitness:
         lines.append(f"uid: {ind.uid}")
-        lines.append(f"fitness: {ind.fitness}")
+        lines.append(f"fitness: T={ind.throughput} L={ind.latency}")
     lines.append(f"req_type_num: {ind.req_type_num}")
     lines.append(f"devices: {list(ind.devices)}")
     lines.append(f"batch_size: {getattr(ind, 'batch_size', None)}")
@@ -127,10 +127,13 @@ def individual_to_dict(ind: Individual) -> Dict[str, Any]:
     data: Dict[str, Any] = {
         "version": "v3",
         "uid": ind.uid,
-        "fitness": ind.fitness,
         "devices": list(ind.devices),
         "req_type_num": ind.req_type_num,
         "batch_size": getattr(ind, "batch_size", 1),
+        "throughput": ind.throughput,
+        "latency": ind.latency,
+        "pareto_rank": ind.pareto_rank,
+        "crowding": ind.crowding,
         "topology": [
             {
                 "node_id": g.node_id,
@@ -188,7 +191,8 @@ def individual_from_dict(data: Dict[str, Any]) -> Individual:
         batch_size=int(data.get("batch_size", 1)),
     )
     ind.uid = data.get("uid")
-    ind.fitness = data.get("fitness")
+    ind.throughput = data.get("throughput")
+    ind.latency = data.get("latency")
     ind.check_legality()
     return ind
 
