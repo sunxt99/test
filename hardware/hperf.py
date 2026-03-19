@@ -24,6 +24,8 @@ def peer_to_peer_communication_time_cost(src_device: HwUnit, dst_device: HwUnit,
 def all_reduce_communication_time_cost(device_list: List[HwUnit], comm_byte_size: int):
     N = len(device_list)
     S = comm_byte_size
-    B = 250 * pow(10,9)   # BW = 250 GB/s
-    L = 5000 / pow(10, 9) # LAT = 3000 ns
+    # B = 250 * pow(10,9)   # BW = 250 GB/s
+    # L = 5000 / pow(10, 9) # LAT = 5000 ns
+    B = 150 * pow(10,9)   # BW = 150 GB/s
+    L = 10000 / pow(10, 9) # LAT = 10000 ns
     return 2*(N-1)*(S/(N*B)+L)*pow(10,3) # 单位：ms

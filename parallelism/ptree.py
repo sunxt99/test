@@ -1,4 +1,5 @@
 from collections import defaultdict
+import random
 
 from system.config import SystemConfig, ModelConfig
 
@@ -44,6 +45,7 @@ class ParallelismTree:
             12: build_case_12,
             13: build_case_13,
             14: build_case_14,
+            15: build_case_15,
         }
         try:
             build_fn = BUILD_CASES[case_idx]
@@ -54,10 +56,12 @@ class ParallelismTree:
 
         self.begin_nodes = [i for i in detect_begin_nodes(self.root_node)]
         self.hardware_mapping()
+
+        # print("---- leaf node info ----")
         # for begin_node in self.begin_nodes:
         #     leaf_nodes = derive_from_node(begin_node)
-            # for leaf_node in leaf_nodes:
-            #     leaf_node.print_info()
+        #     for leaf_node in leaf_nodes:
+        #         leaf_node.print_info()
 
     def summarise_layer_info(self, begin_node: BasicHardwareNode):
         leaf_nodes: List[BasicHardwareNode] = derive_from_node(begin_node)
@@ -93,11 +97,34 @@ class ParallelismTree:
             use_mp_sub_batch: bool):
         req_list_by_type = [[] for _ in range(self.sys_cfg.req_type_num)]
         req_type_distribution = [0] * self.sys_cfg.req_type_num
+
+        req_list_by_type_half1 = [[] for _ in range(self.sys_cfg.req_type_num)]
+        req_type_distribution_half1 = [0] * self.sys_cfg.req_type_num
+        req_list_by_type_half2 = [[] for _ in range(self.sys_cfg.req_type_num)]
+        req_type_distribution_half2 = [0] * self.sys_cfg.req_type_num
+
         if active_queue is not None:
+            # 原始统计
             for r in active_queue:
                 req_list_by_type[r.req_type].append(r)
                 req_type_distribution[r.req_type] += 1
             # print('req_type_distribution:',req_type_distribution)
+
+            # half 统计
+            shuffled_queue = random.sample(active_queue, len(active_queue))
+            mid = len(shuffled_queue) // 2
+            active_queue_half1 = shuffled_queue[:mid]
+            active_queue_half2 = shuffled_queue[mid:]
+
+            # 第一组统计
+            for r in active_queue_half1:
+                req_list_by_type_half1[r.req_type].append(r)
+                req_type_distribution_half1[r.req_type] += 1
+
+            # 第二组统计
+            for r in active_queue_half2:
+                req_list_by_type_half2[r.req_type].append(r)
+                req_type_distribution_half2[r.req_type] += 1
 
         max_run_time_cost_ms = 0.0
         for begin_node in self.begin_nodes:
@@ -107,7 +134,11 @@ class ParallelismTree:
                                                             req_list_by_type,
                                                             req_type_distribution,
                                                             use_pp_sub_batch,
-                                                            use_mp_sub_batch)
+                                                            use_mp_sub_batch,
+                                                            req_list_by_type_half1,
+                                                            req_type_distribution_half1,
+                                                            req_list_by_type_half2,
+                                                            req_type_distribution_half2)
             max_run_time_cost_ms = max(max_run_time_cost_ms, sub_graph_time_cost_ms)
         return max_run_time_cost_ms
 
@@ -118,10 +149,33 @@ class ParallelismTree:
                             use_mp_sub_batch: bool):
         req_list_by_type = [[] for _ in range(self.sys_cfg.req_type_num)]
         req_type_distribution = [0] * self.sys_cfg.req_type_num
+
+        req_list_by_type_half1 = [[] for _ in range(self.sys_cfg.req_type_num)]
+        req_type_distribution_half1 = [0] * self.sys_cfg.req_type_num
+        req_list_by_type_half2 = [[] for _ in range(self.sys_cfg.req_type_num)]
+        req_type_distribution_half2 = [0] * self.sys_cfg.req_type_num
+
         if active_queue is not None:
+            # 原始统计
             for r in active_queue:
                 req_list_by_type[r.req_type].append(r)
                 req_type_distribution[r.req_type] += 1
+
+            # half 统计
+            shuffled_queue = random.sample(active_queue, len(active_queue))
+            mid = len(shuffled_queue) // 2
+            active_queue_half1 = shuffled_queue[:mid]
+            active_queue_half2 = shuffled_queue[mid:]
+
+            # 第一组统计
+            for r in active_queue_half1:
+                req_list_by_type_half1[r.req_type].append(r)
+                req_type_distribution_half1[r.req_type] += 1
+
+            # 第二组统计
+            for r in active_queue_half2:
+                req_list_by_type_half2[r.req_type].append(r)
+                req_type_distribution_half2[r.req_type] += 1
 
         leaf_nodes = derive_from_node(begin_node)
         sub_graph_time_cost_ms = self.analyse_sub_graph(begin_node,
@@ -129,7 +183,11 @@ class ParallelismTree:
                                                         req_list_by_type,
                                                         req_type_distribution,
                                                         use_pp_sub_batch,
-                                                        use_mp_sub_batch)
+                                                        use_mp_sub_batch,
+                                                        req_list_by_type_half1,
+                                                        req_type_distribution_half1,
+                                                        req_list_by_type_half2,
+                                                        req_type_distribution_half2)
         # print(len(active_queue), sub_graph_time_cost_ms)
         return sub_graph_time_cost_ms
 
@@ -140,7 +198,11 @@ class ParallelismTree:
                           req_list_by_type: List[List[Request]],
                           req_type_distribution: List[int],
                           use_pp_sub_batch: bool,
-                          use_mp_sub_batch: bool) -> float:
+                          use_mp_sub_batch: bool,
+                          req_list_by_type_half1: List[List[Request]] = None,
+                          req_type_distribution_half1: List[int] = None,
+                          req_list_by_type_half2: List[List[Request]] = None,
+                          req_type_distribution_half2: List[int] = None) -> float:
 
         for leaf in leaf_nodes_of_subtree:
             assert leaf.is_leaf()
@@ -156,6 +218,12 @@ class ParallelismTree:
         layer_proj_time_ms = [0 for _ in range(self.model_cfg.layer_num)]
         layer_ffn_time_ms = [0 for _ in range(self.model_cfg.layer_num)]
 
+        # 记录一半req的时间
+        layer_qkv_half_time_ms = [0 for _ in range(self.model_cfg.layer_num)]
+        layer_attn_half_time_ms = [0 for _ in range(self.model_cfg.layer_num)]
+        layer_proj_half_time_ms = [0 for _ in range(self.model_cfg.layer_num)]
+        layer_ffn_half_time_ms = [0 for _ in range(self.model_cfg.layer_num)]
+
         # 记录每个 layer 都有哪些 device 参与过（不区分模块）
         layer_leaf_info = [[] for _ in range(self.model_cfg.layer_num)]
         for layer_idx in range(self.model_cfg.layer_num):
@@ -170,10 +238,13 @@ class ParallelismTree:
 
         # 记录不使用 PP/MP sub batch 情况下的总运行时间
         original_processing_time_cost_ms = 0.0
-        #
+
         mp_subbatch_processing_time_cost_ms = 0.0
+
         # 每个 module 都有一个 result cache，用于减少重复的模拟
         result_cache = [dict() for _ in range(4)]
+        result_cache_half = [dict() for _ in range(4)]
+
         # 记录每个 device 上的执行时间，用于 pipeline parallelism
         execution_time_of_leafs_ms = [0 for _ in range(len(leaf_nodes_of_subtree))]
 
@@ -182,10 +253,11 @@ class ParallelismTree:
                 module_active_leaf_indexes = trigger_leaf_node(layer_idx, module_idx, leaf_nodes_of_subtree)
                 if frozenset(module_active_leaf_indexes) not in result_cache[module_idx]:
                     computation_time_cost_ms = self.analyse_computation_pattern(root_of_subtree,
-                                                                             leaf_nodes_of_subtree,
-                                                                             module_idx,
-                                                                             module_active_leaf_indexes,
-                                                                             req_list_by_type, req_type_distribution)
+                                                                                leaf_nodes_of_subtree,
+                                                                                module_idx,
+                                                                                module_active_leaf_indexes,
+                                                                                req_list_by_type,
+                                                                                req_type_distribution)
                     communication_time_cost_ms = self.analyse_communication_pattern(root_of_subtree,
                                                                                    leaf_nodes_of_subtree,
                                                                                    layer_idx,
@@ -193,23 +265,60 @@ class ParallelismTree:
                                                                                    previous_module_active_leaf_indexes,
                                                                                    module_active_leaf_indexes,
                                                                                    req_type_distribution)
-                    # module_time_cost_ms = max(computation_time_cost_ms, communication_time_cost_ms)
+                    computation_half1_time_cost_ms = self.analyse_computation_pattern(root_of_subtree,
+                                                                                leaf_nodes_of_subtree,
+                                                                                module_idx,
+                                                                                module_active_leaf_indexes,
+                                                                                req_list_by_type_half1,
+                                                                                req_type_distribution_half1)
+                    communication_half1_time_cost_ms = self.analyse_communication_pattern(root_of_subtree,
+                                                                                   leaf_nodes_of_subtree,
+                                                                                   layer_idx,
+                                                                                   module_idx,
+                                                                                   previous_module_active_leaf_indexes,
+                                                                                   module_active_leaf_indexes,
+                                                                                   req_type_distribution_half1)
+                    computation_half2_time_cost_ms = self.analyse_computation_pattern(root_of_subtree,
+                                                                                leaf_nodes_of_subtree,
+                                                                                module_idx,
+                                                                                module_active_leaf_indexes,
+                                                                                req_list_by_type_half2,
+                                                                                req_type_distribution_half2)
+                    communication_half2_time_cost_ms = self.analyse_communication_pattern(root_of_subtree,
+                                                                                   leaf_nodes_of_subtree,
+                                                                                   layer_idx,
+                                                                                   module_idx,
+                                                                                   previous_module_active_leaf_indexes,
+                                                                                   module_active_leaf_indexes,
+                                                                                   req_type_distribution_half2)
                     module_time_cost_ms = computation_time_cost_ms + communication_time_cost_ms
+                    # module_time_cost_ms = max(computation_time_cost_ms, communication_time_cost_ms)
+                    module_half1_time_cost_ms = computation_half1_time_cost_ms + communication_half1_time_cost_ms
+                    # module_half1_time_cost_ms = max(computation_half1_time_cost_ms, communication_half1_time_cost_ms)
+                    module_half2_time_cost_ms = computation_half2_time_cost_ms + communication_half2_time_cost_ms
+                    # module_half2_time_cost_ms = max(computation_half2_time_cost_ms, communication_half2_time_cost_ms)
+                    module_half_time_cost_ms = max(module_half1_time_cost_ms, module_half2_time_cost_ms)
                     # print(computation_time_cost_ms, communication_time_cost_ms)
                     # layer_idx = 0 和 module_idx = 0 的情况不能记录进 cache，否则后面的 tp 都没有了
                     if layer_idx != 0 or module_idx != 0:
                         result_cache[module_idx][frozenset(module_active_leaf_indexes)] = module_time_cost_ms
+                        result_cache_half[module_idx][frozenset(module_active_leaf_indexes)] = module_half_time_cost_ms
                 else:
                     module_time_cost_ms = result_cache[module_idx][frozenset(module_active_leaf_indexes)]
+                    module_half_time_cost_ms = result_cache_half[module_idx][frozenset(module_active_leaf_indexes)]
 
                 if module_idx == 0:
                     layer_qkv_time_ms[layer_idx] = module_time_cost_ms
+                    layer_qkv_half_time_ms[layer_idx] = module_half_time_cost_ms
                 elif module_idx == 1:
                     layer_attn_time_ms[layer_idx] = module_time_cost_ms
+                    layer_attn_half_time_ms[layer_idx] = module_half_time_cost_ms
                 elif module_idx == 2:
                     layer_proj_time_ms[layer_idx] = module_time_cost_ms
+                    layer_proj_half_time_ms[layer_idx] = module_half_time_cost_ms
                 elif module_idx == 3:
                     layer_ffn_time_ms[layer_idx] = module_time_cost_ms
+                    layer_ffn_half_time_ms[layer_idx] = module_half_time_cost_ms
 
                 previous_module_active_leaf_indexes = module_active_leaf_indexes
 
@@ -253,11 +362,15 @@ class ParallelismTree:
                 previous_leaf_list = []
             # 考虑 MP 且该层有 MP 参与，当前层不等于前层，说明遇到新的 double sub batch
             elif current_leaf_list != previous_leaf_list:
-                mp_fix_factor = 1.9
-                first_double_sub_batch_time_ms = (layer_qkv_time_ms[layer_idx] +
-                                                  max(layer_qkv_time_ms[layer_idx], layer_attn_time_ms[layer_idx]) +
-                                                  max(layer_proj_time_ms[layer_idx] + layer_ffn_time_ms[layer_idx], layer_attn_time_ms[layer_idx]) +
-                                                  layer_proj_time_ms[layer_idx] + layer_ffn_time_ms[layer_idx]) / mp_fix_factor
+                # mp_fix_factor = 1.9
+                # first_double_sub_batch_time_ms = (layer_qkv_time_ms[layer_idx] +
+                #                                   max(layer_qkv_time_ms[layer_idx], layer_attn_time_ms[layer_idx]) +
+                #                                   max(layer_proj_time_ms[layer_idx] + layer_ffn_time_ms[layer_idx], layer_attn_time_ms[layer_idx]) +
+                #                                   layer_proj_time_ms[layer_idx] + layer_ffn_time_ms[layer_idx]) / mp_fix_factor
+                first_double_sub_batch_time_ms = (layer_qkv_half_time_ms[layer_idx] +
+                                                  max(layer_qkv_half_time_ms[layer_idx], layer_attn_half_time_ms[layer_idx]) +
+                                                  max(layer_proj_half_time_ms[layer_idx] + layer_ffn_half_time_ms[layer_idx], layer_attn_half_time_ms[layer_idx]) +
+                                                  layer_proj_half_time_ms[layer_idx] + layer_ffn_half_time_ms[layer_idx])
                 if use_pp_sub_batch:
                     for leaf_idx in current_leaf_list:
                         execution_time_of_leafs_ms[leaf_idx] += first_double_sub_batch_time_ms
@@ -265,9 +378,13 @@ class ParallelismTree:
                 previous_leaf_list = current_leaf_list
             # 考虑 MP 且该层有 MP 参与，当前层等于前层，说明未遇到新的 double sub batch
             else: # when current_leaf_list == previous_leaf_list:
-                mp_fix_factor = 1.9
-                next_double_sub_batch_time_ms = 2 * max(layer_qkv_time_ms[layer_idx] + layer_proj_time_ms[layer_idx] + layer_ffn_time_ms[layer_idx],
-                                                        layer_attn_time_ms[layer_idx]) / mp_fix_factor
+                # mp_fix_factor = 1.9
+                # next_double_sub_batch_time_ms = 2 * max(layer_qkv_time_ms[layer_idx] + layer_proj_time_ms[layer_idx] + layer_ffn_time_ms[layer_idx],
+                #                                         layer_attn_time_ms[layer_idx]) / mp_fix_factor
+                next_double_sub_batch_time_ms = 2 * max(layer_qkv_half_time_ms[layer_idx] +
+                                                        layer_proj_half_time_ms[layer_idx] +
+                                                        layer_ffn_half_time_ms[layer_idx],
+                                                        layer_attn_half_time_ms[layer_idx])
                 if use_pp_sub_batch:
                     for leaf_idx in current_leaf_list:
                         execution_time_of_leafs_ms[leaf_idx] += next_double_sub_batch_time_ms
@@ -294,8 +411,8 @@ class ParallelismTree:
             for active_leaf_idx in active_leaf_indexes:
                 active_leaf = leaf_of_subtree[active_leaf_idx]
                 # [M,K] * [K,N] = [M,N]
-                # M_size = sum([(d[1]-d[0])*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)]) # batch size
-                M_size = sum([1*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)]) # batch size
+                M_size = sum([(d[1]-d[0])*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)]) # batch size
+                # M_size = sum([1*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)]) # batch size
                 K_size = self.model_cfg.hidden_size # input dimension
                 N_size = (active_leaf.tp_attr[1] - active_leaf.tp_attr[0]) * (self.model_cfg.hidden_size + 2 * self.model_cfg.kv_hidden_size) # output dimension
                 if M_size > 0 and K_size > 0 and N_size > 0:
@@ -313,10 +430,8 @@ class ParallelismTree:
                 mem_ops = 0
                 comp_ops = 0
                 for d,n,r in zip(active_leaf.dp_attr, req_type_distribution, req_list_by_type):
-                    # start_req_idx = floor(d[0] * n)
-                    # end_req_idx = ceil(d[1] * n)
-                    start_req_idx = 0*n
-                    end_req_idx = 1*n
+                    start_req_idx = floor(d[0] * n)
+                    end_req_idx = ceil(d[1] * n)
                     for req_idx in range(start_req_idx, end_req_idx):
                         sequence_length = r[req_idx].prompt_tokens + r[req_idx].gen_tokens
                         # Q * K^T = S
@@ -340,8 +455,8 @@ class ParallelismTree:
             for active_leaf_idx in active_leaf_indexes:
                 active_leaf = leaf_of_subtree[active_leaf_idx]
                 # [M,K] * [K,N] = [M,N]
-                # M_size = sum([(d[1]-d[0])*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)])
-                M_size = sum([1*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)])
+                M_size = sum([(d[1]-d[0])*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)])
+                # M_size = sum([1*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)])
                 K_size =  (active_leaf.tp_attr[1] - active_leaf.tp_attr[0]) * self.model_cfg.hidden_size
                 N_size = self.model_cfg.hidden_size
                 if M_size > 0 and K_size > 0 and N_size > 0:
@@ -355,8 +470,8 @@ class ParallelismTree:
                 active_leaf = leaf_of_subtree[active_leaf_idx]
                 # 1.[M,K] * [K,N] = [M,N]
                 # 2.[M,N] * [N,P] = [M,P]
-                # M_size = sum([(d[1]-d[0])*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)])
-                M_size = sum([1*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)])
+                M_size = sum([(d[1]-d[0])*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)])
+                # M_size = sum([1*n for d,n in zip(active_leaf.dp_attr, req_type_distribution)])
                 K_size = self.model_cfg.hidden_size
                 N_size = (active_leaf.tp_attr[1] - active_leaf.tp_attr[0]) * self.model_cfg.intermediate_size
                 P_size = self.model_cfg.hidden_size

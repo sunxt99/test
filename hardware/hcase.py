@@ -16,36 +16,27 @@ def build_case_0():
     root.add(card_2)
     root.add(card_3)
 
-    # Type-0
-    # device_0 = HwUnit(idx=0, name="npu_0", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
-    # device_1 = HwUnit(idx=1, name="pim_0", meta={"type": "PIM", "flops": 12, "bw": 12, "byte": 2})
-    # device_2 = HwUnit(idx=2, name="npu_1", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
-    # device_3 = HwUnit(idx=3, name="pim_1", meta={"type": "PIM", "flops": 12, "bw": 12, "byte": 2})
-    # device_4 = HwUnit(idx=4, name="npu_2", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
-    # device_5 = HwUnit(idx=5, name="pim_2", meta={"type": "PIM", "flops": 12, "bw": 12, "byte": 2})
-    # device_6 = HwUnit(idx=6, name="npu_3", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
-    # device_7 = HwUnit(idx=7, name="pim_3", meta={"type": "PIM", "flops": 12, "bw": 12, "byte": 2})
-
     # Type-1 针对 pcase-3
-    # pcase 中对于 idx 字段是不敏感的，所以 Type-0 和 Type-1 是等效的。
-    device_0 = HwUnit(idx=0, name="npu_0", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
-    device_1 = HwUnit(idx=4, name="pim_0", meta={"type": "PIM", "flops": 12, "bw": 12, "byte": 2})
-    device_2 = HwUnit(idx=1, name="npu_1", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
-    device_3 = HwUnit(idx=5, name="pim_1", meta={"type": "PIM", "flops": 12, "bw": 12, "byte": 2})
-    device_4 = HwUnit(idx=2, name="npu_2", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
-    device_5 = HwUnit(idx=6, name="pim_2", meta={"type": "PIM", "flops": 12, "bw": 12, "byte": 2})
-    device_6 = HwUnit(idx=3, name="npu_3", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
-    device_7 = HwUnit(idx=7, name="pim_3", meta={"type": "PIM", "flops": 12, "bw": 12, "byte": 2})
-
-    # Type-2 针对 pcase-4
+    # run_sim.py 中对于 idx 字段是不敏感的，所以 Type-0 和 Type-1 是等效的。
+    # 但是 run_evo.py 中需要通过 idx 字段进行 device mapping，所以会有所区别。
     # device_0 = HwUnit(idx=0, name="npu_0", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
-    # device_1 = HwUnit(idx=2, name="pim_0", meta={"type": "PIM", "flops": 12, "bw": 12, "byte": 2})
+    # device_1 = HwUnit(idx=4, name="pim_0", meta={"type": "PIM", "flops": 16, "bw": 16, "byte": 2})
     # device_2 = HwUnit(idx=1, name="npu_1", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
-    # device_3 = HwUnit(idx=3, name="pim_1", meta={"type": "PIM", "flops": 12, "bw": 12, "byte": 2})
-    # device_4 = HwUnit(idx=4, name="npu_2", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
-    # device_5 = HwUnit(idx=6, name="pim_2", meta={"type": "PIM", "flops": 12, "bw": 12, "byte": 2})
-    # device_6 = HwUnit(idx=5, name="npu_3", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
-    # device_7 = HwUnit(idx=7, name="pim_3", meta={"type": "PIM", "flops": 12, "bw": 12, "byte": 2})
+    # device_3 = HwUnit(idx=5, name="pim_1", meta={"type": "PIM", "flops": 16, "bw": 16, "byte": 2})
+    # device_4 = HwUnit(idx=2, name="npu_2", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
+    # device_5 = HwUnit(idx=6, name="pim_2", meta={"type": "PIM", "flops": 16, "bw": 16, "byte": 2})
+    # device_6 = HwUnit(idx=3, name="npu_3", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
+    # device_7 = HwUnit(idx=7, name="pim_3", meta={"type": "PIM", "flops": 16, "bw": 16, "byte": 2})
+
+    # Type-2 针对 pcase-4、pcase-12
+    device_0 = HwUnit(idx=0, name="npu_0", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
+    device_1 = HwUnit(idx=2, name="pim_0", meta={"type": "PIM", "flops": 16, "bw": 16, "byte": 2})
+    device_2 = HwUnit(idx=1, name="npu_1", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
+    device_3 = HwUnit(idx=3, name="pim_1", meta={"type": "PIM", "flops": 16, "bw": 16, "byte": 2})
+    device_4 = HwUnit(idx=4, name="npu_2", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
+    device_5 = HwUnit(idx=6, name="pim_2", meta={"type": "PIM", "flops": 16, "bw": 16, "byte": 2})
+    device_6 = HwUnit(idx=5, name="npu_3", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
+    device_7 = HwUnit(idx=7, name="pim_3", meta={"type": "PIM", "flops": 16, "bw": 16, "byte": 2})
 
     devices.append(device_0)
     devices.append(device_1)
@@ -131,11 +122,13 @@ def build_case_2():
     root.add(card_1)
 
     device_0 = HwUnit(idx=0, name="npu_0", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
-    # device_1 = HwUnit(idx=1, name="pim_0", meta={"type": "PIM", "flops": 150, "bw": 8, "byte": 2})
     device_1 = HwUnit(idx=1, name="pim_0", meta={"type": "PIM", "flops": 15, "bw": 15, "byte": 2})
+    # device_1 = HwUnit(idx=1, name="pim_0", meta={"type": "PIM", "flops": 30, "bw": 30, "byte": 2})
+    # device_1 = HwUnit(idx=1, name="pim_0", meta={"type": "PIM", "flops": 150, "bw": 8, "byte": 2})
     device_2 = HwUnit(idx=2, name="npu_1", meta={"type": "NPU", "flops": 300, "bw": 1.5, "byte": 2})
-    # device_3 = HwUnit(idx=3, name="pim_1", meta={"type": "PIM", "flops": 150, "bw": 8, "byte": 2})
     device_3 = HwUnit(idx=3, name="pim_1", meta={"type": "PIM", "flops": 15, "bw": 15, "byte": 2})
+    # device_3 = HwUnit(idx=3, name="pim_1", meta={"type": "PIM", "flops": 30, "bw": 30, "byte": 2})
+    # device_3 = HwUnit(idx=3, name="pim_1", meta={"type": "PIM", "flops": 150, "bw": 8, "byte": 2})
 
     devices.append(device_0)
     devices.append(device_1)

@@ -4,6 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable, List, Sequence, Union
+import numpy as np
 
 from system.config import SystemConfig, ModelConfig
 from system.metrics import summarize_metrics_data, summarize_metrics
@@ -80,19 +81,25 @@ class SystemEvaluatorV3:
                  for dp_attr, prob in zip(begin_node.dp_attr, self.req_prob)]
             )
             this_sys_cfg.lam = this_lambda
-
-            simulator = Simulator(this_sys_cfg, self.model_cfg, self.req_prob, self.ptree)
-            results.append(simulator.run(begin_node))
+            sample_prob = np.array([(dp_attr[1]-dp_attr[0])*prob for dp_attr, prob in zip(begin_node.dp_attr, self.req_prob)])
+            sample_prob = sample_prob/np.sum(sample_prob)
+            # simulator = Simulator(this_sys_cfg, self.model_cfg, self.req_prob, self.ptree)
+            simulator = Simulator(this_sys_cfg, self.model_cfg, sample_prob, self.ptree)
+            single_thread_result = simulator.run(begin_node)
+            # print(summarize_metrics([single_thread_result], self.sys_cfg.t_end))
+            results.append(single_thread_result)
 
         # return results
-        return summarize_metrics_data(results)
+        return summarize_metrics_data(results, self.sys_cfg.t_end)
 
     def fitness(self, root_node: Any, batch_size: int = 1) -> Any:
         # return float(self.result_to_fitness(self.run_system_on_root(root_node)))
 
         if self.pareto_mode:
+            # 返回两个指标，Throughput 和 Latency（TPOT）
             return self.run_system_on_root(root_node, batch_size)
         else:
+            # 只返回 Throughput，目前已废弃
             return self.run_system_on_root(root_node, batch_size)[0]
 
 
@@ -100,12 +107,12 @@ def make_fitness_fn(
     sys_cfg: SystemConfig,
     model_cfg: ModelConfig,
     *,
-    pareto_mode: bool = False,
+    pareto_mode: bool = True,
     req_prob: Sequence[float],
     hcase_idx: int = 0,
     base_case_idx_for_init: int = 3,
     result_to_fitness: Callable[[List[Any]], float] = default_result_to_fitness,
-) -> Callable[[Any], Any]:
+) -> Callable[[Any, int], Any]:
     return SystemEvaluatorV3(
         sys_cfg=sys_cfg,
         model_cfg=model_cfg,

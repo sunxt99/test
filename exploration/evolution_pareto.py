@@ -8,6 +8,7 @@ import random
 import math
 import hashlib
 from collections import deque
+import json
 
 from parallelism.pnode import Parallelism, XpTag
 
@@ -23,7 +24,6 @@ from exploration.decoder import RootInit, try_decode_to_root
 from exploration.seed_from_pcase import individual_from_pcase_root
 from exploration.ind_io import print_individual
 
-
 @dataclass
 class InitConfig:
     population_size: int = 50
@@ -36,6 +36,8 @@ class InitConfig:
 
     shuffle_devices_per_individual: bool = True
 
+    # Per-individual batch size search space (resampled on every mutation)
+    batch_size_choices: Sequence[int] = (1, 2, 4, 8, 16, 32, 64, 128, 256)
 
 @dataclass
 class EvoConfig:
@@ -82,7 +84,7 @@ def canonical_key(ind: Individual, *, round_digits: int = 3) -> str:
     leaves = sorted(topo.leaf_parallel_nodes())
     dev_items = [(nid, ind.device_assign.leaf_to_devices.get(nid, [])) for nid in leaves]
 
-    s = repr((topo_items, attrs_items, dev_items)).encode("utf-8")
+    s = repr((topo_items, attrs_items, dev_items, int(getattr(ind, "batch_size", 1)))).encode("utf-8")
     return hashlib.sha1(s).hexdigest()
 
 
@@ -198,7 +200,7 @@ def initialize_population(
     req_type_num: int,
     devices: Sequence[int],
     root_init: RootInit,
-    fitness_fn: Callable[[Any], float],
+    fitness_fn: Callable[[Any, int], float],
     attach_hardware_leaves: bool = True,
 ) -> List[Individual]:
     pop: List[Individual] = []
@@ -224,6 +226,7 @@ def initialize_population(
             attrs=attrs,
             devices=devices_list,
             req_type_num=req_type_num,
+            batch_size=int(random.choice(init_cfg.batch_size_choices)),
         )
 
         try:
@@ -236,7 +239,7 @@ def initialize_population(
             continue
 
         try:
-            res = fitness_fn(root)
+            res = fitness_fn(root, ind.batch_size)
             thr, lat = _parse_objectives(res)
             ind.throughput = thr
             ind.latency = lat
@@ -245,8 +248,6 @@ def initialize_population(
             ind.fitness = thr
         except Exception:
             continue
-
-
 
         ind.uid = canonical_key(ind)
         pop.append(ind)
@@ -261,7 +262,7 @@ def initialize_population_with_seeds(
     req_type_num: int,
     devices: Sequence[int],
     root_init: RootInit,
-    fitness_fn: Callable[[Any], float],
+    fitness_fn: Callable[[Any, int], float],
     seed_roots: Optional[Sequence[Any]] = None,  # pcase roots (BasicNode)
     seed_individuals: Optional[Sequence[Individual]] = None,
     attach_hardware_leaves: bool = True,
@@ -287,7 +288,7 @@ def initialize_population_with_seeds(
             if root is None:
                 return
             try:
-                res = fitness_fn(root)
+                res = fitness_fn(root, ind.batch_size)
                 thr, lat = _parse_objectives(res)
                 ind.throughput = thr
                 ind.latency = lat
@@ -318,6 +319,7 @@ def initialize_population_with_seeds(
                     r,
                     devices=devices_list,
                     req_type_num=req_type_num,
+                    batch_size=int(random.choice(init_cfg.batch_size_choices)),
                     strict_device_partition=strict_device_partition,
                 )
             except Exception:
@@ -346,6 +348,7 @@ def initialize_population_with_seeds(
             p_stop_expand=init_cfg.p_stop_expand,
             xp_swap_prob=init_cfg.xp_swap_prob,
             shuffle_devices_per_individual=init_cfg.shuffle_devices_per_individual,
+            batch_size_choices=init_cfg.batch_size_choices,
         )
         rand_pop = initialize_population(
             tmp_cfg,
@@ -562,8 +565,7 @@ def numeric_mutation(ind: Individual, cfg: EvoConfig, init_cfg: InitConfig) -> I
         tags = new_attrs.xp_attr[nid]
         new_attrs.xp_attr[nid] = [tags[1], tags[0]]
 
-    return Individual(topo, da, new_attrs, devices=ind.devices, req_type_num=ind.req_type_num)
-
+    return Individual(topo, da, new_attrs, devices=ind.devices, req_type_num=ind.req_type_num, batch_size=int(getattr(ind, "batch_size", 1)))
 
 def _path_seen_flags(topo: Topology, node_id: int) -> Tuple[bool, bool]:
     seen_pp = False
@@ -579,84 +581,297 @@ def _path_seen_flags(topo: Topology, node_id: int) -> Tuple[bool, bool]:
     return seen_pp, seen_tp
 
 
-def topology_mutation(ind: Individual, cfg: EvoConfig, init_cfg: InitConfig, *, devices: Sequence[int]) -> Individual:
-    topo = ind.topology
-    candidates = [nid for nid in topo.iter_dfs() if topo.gene(nid).ptype != Parallelism.XP]
-    if not candidates:
-        return ind
-    target = random.choice(candidates)
+def _collect_subtree_nodes(nodes: List[TopologyNodeGene], root_id: int) -> set[int]:
+    child_map: Dict[int, List[int]] = {}
+    for g in nodes:
+        child_map.setdefault(g.parent_id, []).append(g.node_id)
+    to_remove: set[int] = set()
+    stack = [root_id]
+    while stack:
+        u = stack.pop()
+        if u in to_remove:
+            continue
+        to_remove.add(u)
+        for v in child_map.get(u, []):
+            stack.append(v)
+    return to_remove
 
-    # editable nodes
-    id2gene: Dict[int, TopologyNodeGene] = {g.node_id: g for g in topo.nodes}
-    parent2children: Dict[int, List[int]] = {g.node_id: [] for g in topo.nodes}
-    for g in topo.nodes:
-        if g.parent_id != -1:
-            parent2children[g.parent_id].append(g.node_id)
 
+def _reindex_child_slots(nodes: List[TopologyNodeGene]) -> List[TopologyNodeGene]:
+    id2gene = {g.node_id: g for g in nodes}
+    parent2children: Dict[int, List[int]] = {}
+    for g in nodes:
+        parent2children.setdefault(g.parent_id, []).append(g.node_id)
+
+    out: Dict[int, TopologyNodeGene] = dict(id2gene)
     for pid, ch in parent2children.items():
-        ch.sort(key=lambda cid: id2gene[cid].child_slot)
+        ch.sort(key=lambda cid: out[cid].child_slot)
         for s, cid in enumerate(ch):
-            gg = id2gene[cid]
+            gg = out[cid]
             if gg.child_slot != s:
-                id2gene[cid] = TopologyNodeGene(node_id=cid, parent_id=pid, ptype=gg.ptype, child_slot=s)
+                out[cid] = TopologyNodeGene(node_id=cid, parent_id=pid, ptype=gg.ptype, child_slot=s)
+    return list(out.values())
 
-    ch = parent2children.get(target, [])
-    k = len(ch)
-    do_add = (random.random() < cfg.p_add_child)
 
-    next_id = max(id2gene.keys()) + 1
-    new_nodes: List[TopologyNodeGene] = list(id2gene.values())
+def _append_random_subtree(
+    base_nodes: List[TopologyNodeGene],
+    parent_id: int,
+    child_slot: int,
+    *,
+    start_id: int,
+    depth_left: int,
+    init_cfg: InitConfig,
+    seen_pp: bool,
+    seen_tp: bool,
+) -> Tuple[List[TopologyNodeGene], int]:
+    """Create a new child under parent_id (at child_slot) and optionally expand it.
 
-    if do_add:
-        if k >= init_cfg.max_children:
-            return ind
-        seen_pp, seen_tp = _path_seen_flags(topo, target)
-        new_type = random.choice(_allowed_types(seen_pp, seen_tp))
-        new_nodes.append(TopologyNodeGene(node_id=next_id, parent_id=target, ptype=new_type, child_slot=k))
+    Returns (new_nodes, next_free_id).
+    """
+    nid = start_id
+    ctype = random.choice(_allowed_types(seen_pp, seen_tp))
+    base_nodes.append(TopologyNodeGene(node_id=nid, parent_id=parent_id, ptype=ctype, child_slot=child_slot))
+    nid += 1
+
+    # Force XP to have children.
+    q: deque[Tuple[int, int, bool, bool]] = deque()
+    q.append((start_id, depth_left - 1, seen_pp or (ctype == Parallelism.PP), seen_tp or (ctype == Parallelism.TP)))
+
+    id2ptype: Dict[int, Parallelism] = {start_id: ctype}
+
+    while q:
+        cur, dl, spp, stp = q.popleft()
+        t = id2ptype[cur]
+
+        # stop condition: allow leaf for non-XP
+        if dl <= 0 or random.random() < init_cfg.p_stop_expand:
+            if t == Parallelism.XP:
+                pass
+            else:
+                continue
+
+        max_k = max(2, init_cfg.max_children)
+        k = 2 if t == Parallelism.XP else random.randint(2, max_k)
+        for slot in range(k):
+            c2 = random.choice(_allowed_types(spp, stp))
+            base_nodes.append(TopologyNodeGene(node_id=nid, parent_id=cur, ptype=c2, child_slot=slot))
+            id2ptype[nid] = c2
+            q.append((nid, dl - 1, spp or (c2 == Parallelism.PP), stp or (c2 == Parallelism.TP)))
+            nid += 1
+
+    return base_nodes, nid
+
+
+def topology_mutation(ind: Individual, cfg: EvoConfig, init_cfg: InitConfig, *, devices: Sequence[int]) -> Individual:
+    """Stronger topology mutation (v2).
+
+    Operators mixed:
+      - add/remove a child under a random non-XP node (original behavior)
+      - random subtree deletion (safe constraints)
+      - subtree replacement (replace a subtree with a freshly sampled subtree)
+      - node type mutation (change DP/PP/TP/XP with local repairs)
+
+    Any failure returns the original individual.
+    """
+    topo = ind.topology
+    nodes0: List[TopologyNodeGene] = list(topo.nodes)
+
+    # choose operator
+    r = random.random()
+    if r < 0.25:
+        op = "add_remove"
+    elif r < 0.50:
+        op = "subtree_delete"
+    elif r < 0.75:
+        op = "subtree_replace"
     else:
+        op = "type_mutate"
+
+    # convenience maps
+    id2gene0: Dict[int, TopologyNodeGene] = {g.node_id: g for g in nodes0}
+    parent2children0: Dict[int, List[int]] = {g.node_id: [] for g in nodes0}
+    for g in nodes0:
+        if g.parent_id != -1:
+            parent2children0.setdefault(g.parent_id, []).append(g.node_id)
+    for pid, ch in parent2children0.items():
+        ch.sort(key=lambda cid: id2gene0[cid].child_slot)
+
+    next_id = max(id2gene0.keys()) + 1
+    new_nodes: List[TopologyNodeGene] = list(nodes0)
+
+    def _finalize(nodes: List[TopologyNodeGene]) -> Optional[Individual]:
+        try:
+            nodes = _reindex_child_slots(nodes)
+            new_topo = Topology(nodes=nodes)
+            new_topo.check_legality()
+        except Exception:
+            return None
+
+        try:
+            new_da = sample_device_assign(new_topo, list(devices), shuffle=init_cfg.shuffle_devices_per_individual)
+        except Exception:
+            return None
+        new_attrs = sample_attrs(new_topo, new_da, req_type_num=ind.req_type_num, init_cfg=init_cfg)
+        return Individual(new_topo, new_da, new_attrs, devices=list(devices), req_type_num=ind.req_type_num, batch_size=int(getattr(ind, "batch_size", 1)))
+
+    # -------- operator: add/remove (original) --------
+    if op == "add_remove":
+        candidates = [nid for nid in topo.iter_dfs() if topo.gene(nid).ptype != Parallelism.XP]
+        if not candidates:
+            return ind
+        target = random.choice(candidates)
+
+        # current children
+        ch = list(parent2children0.get(target, []))
+        k = len(ch)
+        do_add = (random.random() < cfg.p_add_child)
+
+        if do_add:
+            if k >= init_cfg.max_children:
+                return ind
+            seen_pp, seen_tp = _path_seen_flags(topo, target)
+            new_type = random.choice(_allowed_types(seen_pp, seen_tp))
+            new_nodes.append(TopologyNodeGene(node_id=next_id, parent_id=target, ptype=new_type, child_slot=k))
+            out = _finalize(new_nodes)
+            return out if out is not None else ind
+
+        # remove a random child subtree (but keep >=2 children)
         if k <= 2:
             return ind
         remove_cid = random.choice(ch)
+        to_remove = _collect_subtree_nodes(new_nodes, remove_cid)
+        new_nodes = [g for g in new_nodes if g.node_id not in to_remove]
+        out = _finalize(new_nodes)
+        return out if out is not None else ind
 
-        child_map: Dict[int, List[int]] = {}
-        for g in new_nodes:
-            child_map.setdefault(g.parent_id, []).append(g.node_id)
+    # -------- operator: safe subtree deletion --------
+    if op == "subtree_delete":
+        # pick a node that is not root
+        cand = [nid for nid in topo.iter_dfs() if nid != topo.root_id]
+        if not cand:
+            return ind
+        u = random.choice(cand)
+        parent = topo.parent_of(u)
+        if parent == -1:
+            return ind
 
-        to_remove = set()
-        stack = [remove_cid]
-        while stack:
-            u = stack.pop()
-            if u in to_remove:
-                continue
-            to_remove.add(u)
-            for v in child_map.get(u, []):
-                stack.append(v)
+        # cannot delete if parent is XP (must keep exactly 2 children)
+        if topo.gene(parent).ptype == Parallelism.XP:
+            return ind
 
+        siblings = list(parent2children0.get(parent, []))
+        if len(siblings) <= 2:
+            return ind  # would violate >=2 child rule for non-XP nodes in this design
+
+        to_remove = _collect_subtree_nodes(new_nodes, u)
+        new_nodes = [g for g in new_nodes if g.node_id not in to_remove]
+        out = _finalize(new_nodes)
+        return out if out is not None else ind
+
+    # -------- operator: subtree replacement --------
+    if op == "subtree_replace":
+        cand = [nid for nid in topo.iter_dfs() if nid != topo.root_id]
+        if not cand:
+            return ind
+        u = random.choice(cand)
+        parent = topo.parent_of(u)
+        if parent == -1:
+            return ind
+
+        # determine the slot of u under parent
+        u_slot = topo.gene(u).child_slot
+
+        # remove u subtree
+        to_remove = _collect_subtree_nodes(new_nodes, u)
         new_nodes = [g for g in new_nodes if g.node_id not in to_remove]
 
-        remain = [cid for cid in ch if cid not in to_remove]
-        remain.sort(key=lambda cid: id2gene[cid].child_slot)
+        # add a new subtree root under parent at the same slot
+        seen_pp, seen_tp = _path_seen_flags(topo, parent)
+        try:
+            new_nodes, next_id2 = _append_random_subtree(
+                new_nodes,
+                parent_id=parent,
+                child_slot=u_slot,
+                start_id=next_id,
+                depth_left=max(1, init_cfg.max_depth // 2),
+                init_cfg=init_cfg,
+                seen_pp=seen_pp,
+                seen_tp=seen_tp,
+            )
+        except Exception:
+            return ind
 
-        tmp = {g.node_id: g for g in new_nodes}
-        for s, cid in enumerate(remain):
-            gg = tmp[cid]
-            tmp[cid] = TopologyNodeGene(node_id=cid, parent_id=target, ptype=gg.ptype, child_slot=s)
-        new_nodes = list(tmp.values())
+        out = _finalize(new_nodes)
+        return out if out is not None else ind
 
-    try:
-        new_topo = Topology(nodes=new_nodes)
-        new_topo.check_legality()
-    except Exception:
-        return ind
+    # -------- operator: node type mutation --------
+    if op == "type_mutate":
+        cand = [nid for nid in topo.iter_dfs()]
+        if not cand:
+            return ind
+        u = random.choice(cand)
 
-    # resample device partition and attrs (because leaf arities change)
-    try:
-        new_da = sample_device_assign(new_topo, list(devices), shuffle=init_cfg.shuffle_devices_per_individual)
-    except Exception:
-        return ind
-    new_attrs = sample_attrs(new_topo, new_da, req_type_num=ind.req_type_num, init_cfg=init_cfg)
+        # don't mutate root to keep search stable? allow it but repair carefully
+        parent = topo.parent_of(u)
 
-    return Individual(new_topo, new_da, new_attrs, devices=list(devices), req_type_num=ind.req_type_num)
+        # allowed new types based on path
+        seen_pp, seen_tp = _path_seen_flags(topo, u)
+        # remove current node type from choices if possible
+        cur_t = topo.gene(u).ptype
+        choices = [t for t in _allowed_types(seen_pp, seen_tp) if t != cur_t]
+        if not choices:
+            return ind
+        new_t = random.choice(choices)
+
+        # update this node's ptype
+        new_nodes2: List[TopologyNodeGene] = []
+        for g in new_nodes:
+            if g.node_id == u:
+                new_nodes2.append(TopologyNodeGene(node_id=u, parent_id=g.parent_id, ptype=new_t, child_slot=g.child_slot))
+            else:
+                new_nodes2.append(g)
+        new_nodes = new_nodes2
+
+        # repair arity constraints for XP
+        # build fresh child list for u
+        id2g = {g.node_id: g for g in new_nodes}
+        p2c: Dict[int, List[int]] = {}
+        for g in new_nodes:
+            p2c.setdefault(g.parent_id, []).append(g.node_id)
+        for pid, ch in p2c.items():
+            ch.sort(key=lambda cid: id2g[cid].child_slot)
+
+        children_u = list(p2c.get(u, []))
+        if new_t == Parallelism.XP:
+            # must have exactly 2 children
+            if len(children_u) > 2:
+                # trim extra subtrees
+                extra = children_u[2:]
+                to_remove = set()
+                for cid in extra:
+                    to_remove |= _collect_subtree_nodes(new_nodes, cid)
+                new_nodes = [g for g in new_nodes if g.node_id not in to_remove]
+            elif len(children_u) < 2:
+                # append new children subtrees
+                spp, stp = _path_seen_flags(topo, u)
+                base_slot = len(children_u)
+                for add_i in range(2 - len(children_u)):
+                    new_nodes, next_id = _append_random_subtree(
+                        new_nodes,
+                        parent_id=u,
+                        child_slot=base_slot + add_i,
+                        start_id=next_id,
+                        depth_left=max(1, init_cfg.max_depth // 2),
+                        init_cfg=init_cfg,
+                        seen_pp=spp,
+                        seen_tp=stp,
+                    )
+        # if changing from XP to others, keeping 2 children is fine.
+
+        out = _finalize(new_nodes)
+        return out if out is not None else ind
+
+    return ind
 
 
 def _rand_pos():
@@ -777,6 +992,7 @@ def device_mutation(ind: Individual,
         attrs=new_attrs,
         devices=ind.devices,
         req_type_num=ind.req_type_num,
+        batch_size=int(getattr(ind, "batch_size", 1)),
     )
     return child
 
@@ -787,7 +1003,7 @@ def evolve(
     req_type_num: int,
     devices: Sequence[int],
     root_init: RootInit,
-    fitness_fn: Callable[[Any], float],
+    fitness_fn: Callable[[Any, int], float],
     # 使用经验进行种群初始化
     with_pop_seeds: bool = False,
     pop_seed_roots: Optional[Sequence[Any]] = None,
@@ -862,9 +1078,8 @@ def evolve(
         root = try_decode_to_root(ind, root_init, attach_hardware_leaves=attach_hardware_leaves)
         if root is None:
             return None
-
         try:
-            res = fitness_fn(root)
+            res = fitness_fn(root, ind.batch_size)
             thr, lat = _parse_objectives(res)
             if (not math.isfinite(thr)) or (not math.isfinite(lat)):
                 return None
@@ -874,7 +1089,11 @@ def evolve(
             # keep scalar fitness for backward-compatible printing/sorting (throughput only)
             ind.fitness = thr
 
-        except Exception:
+            with open("./result/DSE.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"T": thr, "L": lat}, ensure_ascii=False) + "\n")
+
+        except Exception as e:
+            print("evaluate/write failed:", repr(e))
             # fitness 阶段报错（含 ValueError），视为 invalid 个体丢弃
             return None
 
@@ -905,21 +1124,41 @@ def evolve(
         seen: set[str] = set()
         attempts = 0
 
+        # 循环生成 offspring
         while len(offspring) < offspring_target and attempts < attempt_limit:
             attempts += 1
+            # 选择父代，锦标赛选择：从 pop 随机抽 k 个，取 fitness 最大的那个。k 越大选择压力越强。
             parent = tournament_select(pop, evo_cfg.tournament_k)
 
             r = random.random()
             if r < evo_cfg.p_topology_mut:
+                # topology_mutation：改树结构（加/删某个节点的一个并行子树），然后必须：
+                # 1. 重新做 device partition（因为 leaf 集合可能变了）
+                # 2. 重新生成 attrs（因为 leaf 有效 arity 变了）
                 child = topology_mutation(parent, evo_cfg, init_cfg, devices=devices_list)
+            # else:
+            #     numeric_mutation：不改结构，只对 attrs 做“乘性噪声”扰动（DP/PP/TP）或 XP tag 交换等
+                # child = numeric_mutation(parent, evo_cfg, init_cfg)
             elif r < evo_cfg.p_topology_mut + evo_cfg.p_device_mut:
                 child = device_mutation(parent)
             else:
                 child = numeric_mutation(parent, evo_cfg, init_cfg)
 
+            # Always resample batch_size on every mutation.
+            # NOTE: some mutation ops may return the parent object; avoid in-place edits.
+            child = Individual(
+                topology=child.topology,
+                device_assign=child.device_assign,
+                attrs=child.attrs,
+                devices=list(child.devices),
+                req_type_num=child.req_type_num,
+                batch_size=int(random.choice(init_cfg.batch_size_choices)),
+            )
+
             child2 = eval_ind(child)
             if child2 is None or child2.uid is None or child2.objectives is None:
                 continue
+            # 去重（按 uid）
             if child2.uid in seen:
                 continue
             if child2.throughput is None or child2.latency is None:
@@ -931,6 +1170,7 @@ def evolve(
             offspring.append(child2)
 
         # If offspring not enough, pad with random individuals from current pop
+        # offspring 不够时，用旧种群补齐。即，如果因为丢弃太多导致 offspring 产量不足，就从上一代非精英里随机抽一些填充，避免种群规模缩水。
         if len(offspring) < offspring_target:
             pool = pop
             if pool:

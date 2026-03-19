@@ -105,10 +105,14 @@ class Simulator:
         cls = int(self.rng.choice(self.sim_cfg.req_type_num, p=self.req_prob))
         if cls == 0:
             pm, gm, ps, gs = 256, 256, 128.0, 128.0 # prompt_mean, gen_mean, prompt_std, gen_std
+        elif cls == 1:
+            # pm, gm, ps, gs = 1024, 1024, 256.0, 256.0 # prompt_mean, gen_mean, prompt_std, gen_std
+            pm, gm, ps, gs = 4096, 4096, 2048.0, 2048.0 # prompt_mean, gen_mean, prompt_std, gen_std
         else:
             # pm, gm, ps, gs = 2048, 2048, 1024.0, 1024.0 # prompt_mean, gen_mean, prompt_std, gen_std
-            # pm, gm, ps, gs = 1024, 1024, 512.0, 512.0 # prompt_mean, gen_mean, prompt_std, gen_std
-            pm, gm, ps, gs = 4096, 4096, 2048.0, 2048.0 # prompt_mean, gen_mean, prompt_std, gen_std
+            # pm, gm, ps, gs = 4096, 4096, 2048.0, 2048.0 # prompt_mean, gen_mean, prompt_std, gen_std
+            pm, gm, ps, gs = 10240, 10240, 2048.0, 2048.0 # prompt_mean, gen_mean, prompt_std, gen_std
+
 
         prompt_tokens = self._sample_nonneg_int_normal(pm, ps, min_value=1)
         target_gen_tokens = self._sample_nonneg_int_normal(gm, gs, min_value=1)
@@ -280,6 +284,7 @@ class Simulator:
                                                              self.active,
                                                              False,
                                                              self.sim_cfg.use_mp_sub_batch) / 1000
+                # print("batch_size:", len(self.active), "step_time_s:", step_time_s)
             else:
                 sub_batch_size = max(1, ceil(len(self.active) / sub_batch_num))
                 random_indexes = random.sample(range(len(self.active)), sub_batch_size)
