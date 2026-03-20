@@ -84,7 +84,8 @@ def canonical_key(ind: Individual, *, round_digits: int = 3) -> str:
     leaves = sorted(topo.leaf_parallel_nodes())
     dev_items = [(nid, ind.device_assign.leaf_to_devices.get(nid, [])) for nid in leaves]
 
-    s = repr((topo_items, attrs_items, dev_items, int(getattr(ind, "batch_size", 1)))).encode("utf-8")
+    sub_graph_batch_items = sorted((int(k), int(v)) for k, v in getattr(ind, "sub_graph_batch_sizes", {}).items())
+    s = repr((topo_items, attrs_items, dev_items, int(getattr(ind, "batch_size", 1)), sub_graph_batch_items)).encode("utf-8")
     return hashlib.sha1(s).hexdigest()
 
 
@@ -164,6 +165,83 @@ def sample_device_assign(topo: Topology, devices: Sequence[int], *, shuffle: boo
         idx += sz
     return da
 
+def _detect_begin_node_ids(topo: Topology) -> List[int]:
+    """Mirror ptraversal.detect_begin_nodes() on topology node ids."""
+    out: List[int] = []
+
+    def dfs(nid: int) -> None:
+        if topo.gene(nid).ptype == Parallelism.DP:
+            for cid in topo.children_of(nid):
+                dfs(cid)
+        else:
+            out.append(nid)
+
+    dfs(topo.root_id)
+    return out
+
+
+def _sample_sub_graph_batch_sizes_for_topology(topo: Topology, max_batch_lo: int) -> Dict[int, int]:
+    """
+    Resample sub-graph batch sizes with a mixed strategy:
+      - 70%: reset every begin node to the global upper bound
+      - 30%: true random resampling in [1, max_batch_lo]
+    """
+    begin_ids = _detect_begin_node_ids(topo)
+    upper = max(1, int(max_batch_lo))
+
+    if random.random() < 0.50:
+        return {int(nid): int(upper) for nid in begin_ids}
+    return {int(nid): int(random.randint(1, upper)) for nid in begin_ids}
+
+
+def _tweak_sub_graph_batch_sizes(parent_map: Dict[int, int], child_begin_ids: Sequence[int], max_batch_lo: int) -> Dict[int, int]:
+    """Micro-tune sub-graph batch sizes only around the parent's assignments."""
+    upper = max(1, int(max_batch_lo))
+    if not child_begin_ids:
+        return {}
+
+    child_map: Dict[int, int] = {}
+    touched = False
+    for nid in child_begin_ids:
+        base = int(parent_map.get(int(nid), upper))
+        base = max(1, min(upper, base))
+        if random.random() < 0.6:
+            delta = random.choice([-2, -1, 1, 2])
+            base = max(1, min(upper, base + delta))
+            touched = True
+        child_map[int(nid)] = int(base)
+
+    if (not touched) and child_begin_ids:
+        nid = int(random.choice(list(child_begin_ids)))
+        base = child_map[nid]
+        delta = random.choice([-2, -1, 1, 2])
+        child_map[nid] = max(1, min(upper, base + delta))
+    return child_map
+
+
+def _mutate_sub_graph_batch_sizes(
+    parent: Individual,
+    child: Individual,
+    mutation_kind: str,
+) -> Dict[int, int]:
+    child_begin_ids = _detect_begin_node_ids(child.topology)
+    upper = max(1, int(getattr(child, "batch_size", 1)))
+
+    if mutation_kind == "topology":
+        return _sample_sub_graph_batch_sizes_for_topology(child.topology, upper)
+
+    parent_map = {int(k): int(v) for k, v in getattr(parent, "sub_graph_batch_sizes", {}).items()}
+    if (not parent_map) or (set(parent_map.keys()) != set(int(x) for x in child_begin_ids)):
+        return _sample_sub_graph_batch_sizes_for_topology(child.topology, upper)
+
+    r = random.random()
+    if r < 0.60:
+        return {int(nid): max(1, min(upper, int(parent_map[int(nid)]))) for nid in child_begin_ids}
+    if r < 0.80:
+        return _tweak_sub_graph_batch_sizes(parent_map, child_begin_ids, upper)
+    return _sample_sub_graph_batch_sizes_for_topology(child.topology, upper)
+
+
 def sample_attrs(topo: Topology, device_assign: DeviceAssign, req_type_num: int, init_cfg: InitConfig) -> Attrs:
     """
     v3: leaf arity is device_group_size; XP tags are exactly [ATTENTION, LINEAR] (maybe swapped).
@@ -220,13 +298,15 @@ def initialize_population(
 
         attrs = sample_attrs(topo, da, req_type_num=req_type_num, init_cfg=init_cfg)
 
+        batch_size = int(random.choice(init_cfg.batch_size_choices))
         ind = Individual(
             topology=topo,
             device_assign=da,
             attrs=attrs,
             devices=devices_list,
             req_type_num=req_type_num,
-            batch_size=int(random.choice(init_cfg.batch_size_choices)),
+            batch_size=batch_size,
+            sub_graph_batch_sizes=_sample_sub_graph_batch_sizes_for_topology(topo, batch_size),
         )
 
         try:
@@ -282,6 +362,8 @@ def initialize_population_with_seeds(
     def try_add(ind: Individual) -> None:
         nonlocal pop, seen
         try:
+            if not getattr(ind, "sub_graph_batch_sizes", None):
+                ind.sub_graph_batch_sizes = _sample_sub_graph_batch_sizes_for_topology(ind.topology, int(getattr(ind, "batch_size", 1)))
             root = try_decode_to_root(ind, root_init, attach_hardware_leaves=attach_hardware_leaves)
             if root is None:
                 return
@@ -311,13 +393,15 @@ def initialize_population_with_seeds(
     if seed_roots:
         for r in seed_roots:
             try:
+                batch_size = int(random.choice(init_cfg.batch_size_choices))
                 ind = individual_from_pcase_root(
                     r,
                     devices=devices_list,
                     req_type_num=req_type_num,
-                    batch_size=int(random.choice(init_cfg.batch_size_choices)),
+                    batch_size=batch_size,
                     strict_device_partition=strict_device_partition,
                 )
+                ind.sub_graph_batch_sizes = _sample_sub_graph_batch_sizes_for_topology(ind.topology, batch_size)
             except Exception:
                 continue
             try_add(ind)
@@ -561,7 +645,15 @@ def numeric_mutation(ind: Individual, cfg: EvoConfig, init_cfg: InitConfig) -> I
         tags = new_attrs.xp_attr[nid]
         new_attrs.xp_attr[nid] = [tags[1], tags[0]]
 
-    return Individual(topo, da, new_attrs, devices=ind.devices, req_type_num=ind.req_type_num, batch_size=int(getattr(ind, "batch_size", 1)))
+    return Individual(
+        topo,
+        da,
+        new_attrs,
+        devices=ind.devices,
+        req_type_num=ind.req_type_num,
+        batch_size=int(getattr(ind, "batch_size", 1)),
+        sub_graph_batch_sizes=dict(getattr(ind, "sub_graph_batch_sizes", {})),
+    )
 
 def _path_seen_flags(topo: Topology, node_id: int) -> Tuple[bool, bool]:
     seen_pp = False
@@ -708,7 +800,15 @@ def topology_mutation(ind: Individual, cfg: EvoConfig, init_cfg: InitConfig, *, 
         except Exception:
             return None
         new_attrs = sample_attrs(new_topo, new_da, req_type_num=ind.req_type_num, init_cfg=init_cfg)
-        return Individual(new_topo, new_da, new_attrs, devices=list(devices), req_type_num=ind.req_type_num, batch_size=int(getattr(ind, "batch_size", 1)))
+        return Individual(
+            new_topo,
+            new_da,
+            new_attrs,
+            devices=list(devices),
+            req_type_num=ind.req_type_num,
+            batch_size=int(getattr(ind, "batch_size", 1)),
+            sub_graph_batch_sizes={},
+        )
 
     # -------- operator: add/remove (original) --------
     if op == "add_remove":
@@ -989,6 +1089,7 @@ def device_mutation(ind: Individual,
         devices=ind.devices,
         req_type_num=ind.req_type_num,
         batch_size=int(getattr(ind, "batch_size", 1)),
+        sub_graph_batch_sizes=dict(getattr(ind, "sub_graph_batch_sizes", {})),
     )
     return child
 
@@ -1128,23 +1229,40 @@ def evolve(
                 # 1. 重新做 device partition（因为 leaf 集合可能变了）
                 # 2. 重新生成 attrs（因为 leaf 有效 arity 变了）
                 child = topology_mutation(parent, evo_cfg, init_cfg, devices=devices_list)
+                mutation_kind = "topology"
             # else:
             #     numeric_mutation：不改结构，只对 attrs 做“乘性噪声”扰动（DP/PP/TP）或 XP tag 交换等
                 # child = numeric_mutation(parent, evo_cfg, init_cfg)
             elif r < evo_cfg.p_topology_mut + evo_cfg.p_device_mut:
                 child = device_mutation(parent)
+                mutation_kind = "device"
             else:
                 child = numeric_mutation(parent, evo_cfg, init_cfg)
+                mutation_kind = "numeric"
 
-            # Always resample batch_size on every mutation.
+            # Always resample batch_size on every mutation, then mutate sub-graph batch sizes.
             # NOTE: some mutation ops may return the parent object; avoid in-place edits.
+            child_batch_size = int(random.choice(init_cfg.batch_size_choices))
             child = Individual(
                 topology=child.topology,
                 device_assign=child.device_assign,
                 attrs=child.attrs,
                 devices=list(child.devices),
                 req_type_num=child.req_type_num,
-                batch_size=int(random.choice(init_cfg.batch_size_choices)),
+                batch_size=child_batch_size,
+                sub_graph_batch_sizes=_mutate_sub_graph_batch_sizes(
+                    parent,
+                    Individual(
+                        topology=child.topology,
+                        device_assign=child.device_assign,
+                        attrs=child.attrs,
+                        devices=list(child.devices),
+                        req_type_num=child.req_type_num,
+                        batch_size=child_batch_size,
+                        sub_graph_batch_sizes=dict(getattr(child, "sub_graph_batch_sizes", {})),
+                    ),
+                    mutation_kind,
+                ),
             )
 
             child2 = eval_ind(child)

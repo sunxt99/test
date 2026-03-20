@@ -246,6 +246,8 @@ class Individual:
     req_type_num: int
 
     batch_size: int = 1
+    # begin_node/sub-graph specific max_batch_lo, keyed by topology node_id
+    sub_graph_batch_sizes: Dict[int, int] = field(default_factory=dict)
 
     # Multi-objective metrics (v4: Pareto throughput-latency)
     # objectives: (throughput, latency) where throughput is MAXIMIZED and latency is MINIMIZED.
@@ -264,3 +266,9 @@ class Individual:
         self.device_assign.check_complete_for_leaves(self.topology)
         self.device_assign.check_total_devices(self.devices)
         self.attrs.check_shapes(self.topology, self.device_assign, self.req_type_num)
+
+        if getattr(self, "batch_size", 1) < 1:
+            raise ValueError(f"batch_size must be >= 1, got {self.batch_size}")
+        for nid, bs in getattr(self, "sub_graph_batch_sizes", {}).items():
+            if int(bs) < 1:
+                raise ValueError(f"sub_graph batch size for node {nid} must be >= 1, got {bs}")

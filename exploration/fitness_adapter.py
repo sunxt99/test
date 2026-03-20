@@ -61,6 +61,21 @@ class SystemEvaluatorV3:
         # print(mapper)
         self.ptree.mapper = mapper
 
+    def _resolve_sub_graph_batch_size(self, root_node: Any, begin_node: Any, default_batch_size: int) -> int:
+        batch_dict = getattr(root_node, "sub_graph_batch_sizes", None)
+        if not isinstance(batch_dict, dict):
+            return int(default_batch_size)
+
+        topo_node_id = getattr(begin_node, "_topo_node_id", None)
+        if topo_node_id in batch_dict:
+            return max(1, int(batch_dict[topo_node_id]))
+
+        name = getattr(begin_node, "name", None)
+        if name in batch_dict:
+            return max(1, int(batch_dict[name]))
+
+        return int(default_batch_size)
+
     def run_system_on_root(self, root_node: Any, batch_size: int = 1):
         self._override_ptree_with_root(root_node)
 
@@ -73,7 +88,7 @@ class SystemEvaluatorV3:
             this_sys_cfg.sub_batch_num = sub_batch_num
             this_sys_cfg.use_pp_sub_batch = True
             this_sys_cfg.use_mp_sub_batch = True
-            this_sys_cfg.max_batch_lo = batch_size
+            this_sys_cfg.max_batch_lo = self._resolve_sub_graph_batch_size(root_node, begin_node, batch_size)
 
             this_lambda = sum(
                 [(dp_attr[1] - dp_attr[0]) * prob * original_lambda

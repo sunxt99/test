@@ -71,7 +71,9 @@ def decode_to_root(ind: Individual, root_init: RootInit, *, attach_hardware_leav
 
     # 1) instantiate parallel nodes
     for nid in topo.iter_dfs():
-        id2node[nid] = make_node(nid)
+        node = make_node(nid)
+        setattr(node, "_topo_node_id", int(nid))
+        id2node[nid] = node
 
     # 2) connect parallel topology edges
     for pid in topo.iter_dfs():
@@ -102,6 +104,7 @@ def decode_to_root(ind: Individual, root_init: RootInit, *, attach_hardware_leav
         except Exception as e:
             raise DecodeError(f"Attach hardware failed: {e}") from e
 
+    setattr(root, "sub_graph_batch_sizes", dict(getattr(ind, "sub_graph_batch_sizes", {})))
     return root
 
 

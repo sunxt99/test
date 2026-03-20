@@ -77,7 +77,7 @@ def main() -> None:
                           # batch_size_choices=(1,2,4,8,16,32,48,64,96,128,160,196)) # model2
                           # batch_size_choices=(1,2,4,8,16,32,48,64,96,112,128)) # model3
 
-    evo_cfg = EvoConfig(generations=5,
+    evo_cfg = EvoConfig(generations=10,
                         #generations=10,
                         elite_size=8,
                         # elite_size=5,
@@ -111,7 +111,7 @@ def main() -> None:
 
     # pop_seed_indexes = [1,2,3,4]
     # pop_seed_indexes = [3,4]
-    pop_seed_indexes = [12]
+    pop_seed_indexes = [4,12]
     pop_seed_roots = []
     for i in pop_seed_indexes:
         if i not in builders:

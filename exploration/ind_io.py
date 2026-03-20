@@ -57,6 +57,7 @@ def format_individual(
     lines.append(f"req_type_num: {ind.req_type_num}")
     lines.append(f"devices: {list(ind.devices)}")
     lines.append(f"batch_size: {getattr(ind, 'batch_size', None)}")
+    lines.append(f"sub_graph_batch_sizes: {getattr(ind, 'sub_graph_batch_sizes', {})}")
     lines.append("")
 
     def node_header(nid: int) -> str:
@@ -125,11 +126,12 @@ def print_individual(ind: Individual, **kwargs: Any) -> None:
 def individual_to_dict(ind: Individual) -> Dict[str, Any]:
     topo = ind.topology
     data: Dict[str, Any] = {
-        "version": "v3",
+        "version": "v4",
         "uid": ind.uid,
         "devices": list(ind.devices),
         "req_type_num": ind.req_type_num,
         "batch_size": getattr(ind, "batch_size", 1),
+        "sub_graph_batch_sizes": {str(k): int(v) for k, v in getattr(ind, "sub_graph_batch_sizes", {}).items()},
         "throughput": ind.throughput,
         "latency": ind.latency,
         "pareto_rank": ind.pareto_rank,
@@ -155,7 +157,7 @@ def individual_to_dict(ind: Individual) -> Dict[str, Any]:
 
 
 def individual_from_dict(data: Dict[str, Any]) -> Individual:
-    if data.get("version") != "v3":
+    if data.get("version") not in {"v3", "v4"}:
         raise ValueError(f"Unsupported version: {data.get('version')}")
 
     topo_nodes = []
@@ -189,6 +191,7 @@ def individual_from_dict(data: Dict[str, Any]) -> Individual:
         devices=list(data["devices"]),
         req_type_num=int(data["req_type_num"]),
         batch_size=int(data.get("batch_size", 1)),
+        sub_graph_batch_sizes={int(k): int(v) for k, v in data.get("sub_graph_batch_sizes", {}).items()},
     )
     ind.uid = data.get("uid")
     ind.throughput = data.get("throughput")
