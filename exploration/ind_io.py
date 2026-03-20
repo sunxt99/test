@@ -31,34 +31,15 @@ def _enum_from_json(obj: Any) -> Any:
 # =========================
 # Visualization (printable)
 # =========================
-
-def format_individual(
+def format_topology(
     ind: Individual,
-    *,
-    show_devices: bool = True,
-    show_attrs: bool = True,
-    show_fitness: bool = True,
+    show_devices: bool,
+    show_attrs: bool,
 ) -> str:
-    """
-    Return a readable multi-line string showing:
-      - topology as an indented tree
-      - each node's parallel_attr (and for leaf nodes, its device group)
-      - summary: uid/fitness/devices/req_type_num
 
-    Fix:
-      - root node now prints its attrs/devices the same way as other nodes.
-    """
     topo = ind.topology
     lines: List[str] = []
 
-    if show_fitness:
-        lines.append(f"uid: {ind.uid}")
-        lines.append(f"fitness: T={ind.throughput} L={ind.latency}")
-    lines.append(f"req_type_num: {ind.req_type_num}")
-    lines.append(f"devices: {list(ind.devices)}")
-    lines.append(f"batch_size: {getattr(ind, 'batch_size', None)}")
-    lines.append(f"sub_graph_batch_sizes: {getattr(ind, 'sub_graph_batch_sizes', {})}")
-    lines.append("")
 
     def node_header(nid: int) -> str:
         t = topo.gene(nid).ptype
@@ -106,7 +87,6 @@ def format_individual(
             dfs(cid, new_prefix, i == len(children) - 1)
 
     rid = topo.root_id
-    lines.append("Topology:")
     lines.append(node_line(rid))
     children = topo.children_of(rid)
     for i, cid in enumerate(children):
@@ -115,8 +95,60 @@ def format_individual(
     return "\n".join(lines)
 
 
+def format_individual(
+    ind: Individual,
+    *,
+    show_devices: bool = True,
+    show_attrs: bool = True,
+    show_fitness: bool = True,
+) -> str:
+    """
+    Return a readable multi-line string showing:
+      - topology as an indented tree
+      - each node's parallel_attr (and for leaf nodes, its device group)
+      - summary: uid/fitness/devices/req_type_num
+
+    Fix:
+      - root node now prints its attrs/devices the same way as other nodes.
+    """
+    topo = ind.topology
+    lines: List[str] = []
+
+    if show_fitness:
+        lines.append(f"uid: {ind.uid}")
+        lines.append(f"fitness: T={ind.throughput} L={ind.latency}")
+    lines.append(f"req_type_num: {ind.req_type_num}")
+    lines.append(f"devices: {list(ind.devices)}")
+    lines.append(f"batch_size: {getattr(ind, 'batch_size', None)}")
+    lines.append(f"sub_graph_batch_sizes: {getattr(ind, 'sub_graph_batch_sizes', {})}")
+    lines.append("")
+
+    lines.append("Topology:")
+    lines.append(format_topology(ind, show_devices, show_attrs))
+
+    return "\n".join(lines)
+
+
 def print_individual(ind: Individual, **kwargs: Any) -> None:
     print(format_individual(ind, **kwargs))
+
+
+# =========================
+# Logging (pareto front and dse scatter point)
+# 只保存比较简单的信息，用于日志以及绘图。
+# 不同于 save_individual_json 是序列化。
+# =========================
+
+def log_individual_json(ind: Individual, path:str) -> None:
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"T": ind.throughput,
+                            "L": ind.latency,
+                            # bs: batch sizes
+                            "bs": getattr(ind, 'batch_size', None),
+                            # sgbs: sub graph batch sizes
+                            "sgbs": getattr(ind, 'sub_graph_batch_sizes', {}),
+                            "info": format_topology(ind, True, True),
+                            }, ensure_ascii=False) + "\n")
 
 
 # =========================

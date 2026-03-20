@@ -30,7 +30,7 @@ for hw in "${hw_configs[@]}"; do
     read -r req0 req1 req2 <<< "$req_dist"
     for lam in 100; do
       OUT="result/model0_single_req3_${arch_name}_lam${lam}_${req0}_${req1}_${req2}.jsonl"
-      rm -f "$OUT"
+#      rm -f "$OUT"
 #      for B in 256; do # model0
       for B in 1 2 4 8 16 32 64 96 128 256 320 384 448 512; do # model0
       # for B in 1 2 4 8 16 32 48 64 96 128 160 196 228 256 288 384; do # model1

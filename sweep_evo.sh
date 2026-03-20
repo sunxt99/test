@@ -28,7 +28,9 @@ for hw in "${hw_configs[@]}"; do
     read -r req0 req1 req2 <<< "$req_dist"
     for lam in 100; do
       OUT="result/model0_pareto_with_subbatch_req3_${arch_name}_lam${lam}_${req0}_${req1}_${req2}.jsonl"
-      rm -f "$OUT"
+      DSE_OUT="result/dse/model0_pareto_with_subbatch_req3_${arch_name}_lam${lam}_${req0}_${req1}_${req2}.jsonl"
+#      rm -f "$OUT"
+#      rm -f "$DSE_OUT"
       echo "Running req_dist=[$req0,$req1,$req2], lam=$lam"
       # 这里的 pcase-index 和 max-batch-lo 是不重要的。这里只是为了共享接口。
       /Users/SXT/anaconda3/envs/mytrans/bin/python run_evolution.py \
@@ -41,7 +43,8 @@ for hw in "${hw_configs[@]}"; do
         --t-end 100 \
         --priority-ratio 0.0 \
         --max-batch-lo 512 \
-        --out "$OUT"
+        --out "$OUT" \
+        --dse-out "$DSE_OUT"
     done
   done
 done

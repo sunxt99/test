@@ -22,7 +22,8 @@ from exploration.individual import (
 
 from exploration.decoder import RootInit, try_decode_to_root
 from exploration.seed_from_pcase import individual_from_pcase_root
-from exploration.ind_io import print_individual
+from exploration.ind_io import log_individual_json, print_individual
+
 
 @dataclass
 class InitConfig:
@@ -56,6 +57,8 @@ class EvoConfig:
 
     tournament_k: int = 3
     enable_cache: bool = True
+
+    enable_subgraph_batch_mut: bool = False
 
 
 def canonical_key(ind: Individual, *, round_digits: int = 3) -> str:
@@ -180,7 +183,9 @@ def _detect_begin_node_ids(topo: Topology) -> List[int]:
     return out
 
 
-def _sample_sub_graph_batch_sizes_for_topology(topo: Topology, max_batch_lo: int) -> Dict[int, int]:
+def _sample_sub_graph_batch_sizes_for_topology(topo: Topology,
+                                               max_batch_lo: int,
+                                               enable_subgraph_batch_mut: bool) -> Dict[int, int]:
     """
     Resample sub-graph batch sizes with a mixed strategy:
       - 70%: reset every begin node to the global upper bound
@@ -189,9 +194,12 @@ def _sample_sub_graph_batch_sizes_for_topology(topo: Topology, max_batch_lo: int
     begin_ids = _detect_begin_node_ids(topo)
     upper = max(1, int(max_batch_lo))
 
-    if random.random() < 0.50:
+    if enable_subgraph_batch_mut:
+        if random.random() < 0.50:
+            return {int(nid): int(upper) for nid in begin_ids}
+        return {int(nid): int(random.randint(1, upper)) for nid in begin_ids}
+    else:
         return {int(nid): int(upper) for nid in begin_ids}
-    return {int(nid): int(random.randint(1, upper)) for nid in begin_ids}
 
 
 def _tweak_sub_graph_batch_sizes(parent_map: Dict[int, int], child_begin_ids: Sequence[int], max_batch_lo: int) -> Dict[int, int]:
@@ -223,24 +231,27 @@ def _mutate_sub_graph_batch_sizes(
     parent: Individual,
     child: Individual,
     mutation_kind: str,
+    enable_subgraph_batch_mut: bool
 ) -> Dict[int, int]:
     child_begin_ids = _detect_begin_node_ids(child.topology)
     upper = max(1, int(getattr(child, "batch_size", 1)))
 
     if mutation_kind == "topology":
-        return _sample_sub_graph_batch_sizes_for_topology(child.topology, upper)
+        return _sample_sub_graph_batch_sizes_for_topology(child.topology, upper, enable_subgraph_batch_mut)
 
     parent_map = {int(k): int(v) for k, v in getattr(parent, "sub_graph_batch_sizes", {}).items()}
     if (not parent_map) or (set(parent_map.keys()) != set(int(x) for x in child_begin_ids)):
-        return _sample_sub_graph_batch_sizes_for_topology(child.topology, upper)
+        return _sample_sub_graph_batch_sizes_for_topology(child.topology, upper, enable_subgraph_batch_mut)
 
-    r = random.random()
-    if r < 0.60:
+    if enable_subgraph_batch_mut:
+        r = random.random()
+        if r < 0.60:
+            return {int(nid): max(1, min(upper, int(parent_map[int(nid)]))) for nid in child_begin_ids}
+        if r < 0.80:
+            return _tweak_sub_graph_batch_sizes(parent_map, child_begin_ids, upper)
+        return _sample_sub_graph_batch_sizes_for_topology(child.topology, upper, enable_subgraph_batch_mut)
+    else:
         return {int(nid): max(1, min(upper, int(parent_map[int(nid)]))) for nid in child_begin_ids}
-    if r < 0.80:
-        return _tweak_sub_graph_batch_sizes(parent_map, child_begin_ids, upper)
-    return _sample_sub_graph_batch_sizes_for_topology(child.topology, upper)
-
 
 def sample_attrs(topo: Topology, device_assign: DeviceAssign, req_type_num: int, init_cfg: InitConfig) -> Attrs:
     """
@@ -274,6 +285,7 @@ def sample_attrs(topo: Topology, device_assign: DeviceAssign, req_type_num: int,
 
 def initialize_population(
     init_cfg: InitConfig,
+    evo_cfg: EvoConfig,
     *,
     req_type_num: int,
     devices: Sequence[int],
@@ -306,7 +318,7 @@ def initialize_population(
             devices=devices_list,
             req_type_num=req_type_num,
             batch_size=batch_size,
-            sub_graph_batch_sizes=_sample_sub_graph_batch_sizes_for_topology(topo, batch_size),
+            sub_graph_batch_sizes=_sample_sub_graph_batch_sizes_for_topology(topo, batch_size, evo_cfg.enable_subgraph_batch_mut),
         )
 
         try:
@@ -336,6 +348,7 @@ def initialize_population(
 
 def initialize_population_with_seeds(
     init_cfg: InitConfig,
+    evo_cfg: EvoConfig,
     *,
     req_type_num: int,
     devices: Sequence[int],
@@ -363,7 +376,9 @@ def initialize_population_with_seeds(
         nonlocal pop, seen
         try:
             if not getattr(ind, "sub_graph_batch_sizes", None):
-                ind.sub_graph_batch_sizes = _sample_sub_graph_batch_sizes_for_topology(ind.topology, int(getattr(ind, "batch_size", 1)))
+                ind.sub_graph_batch_sizes = _sample_sub_graph_batch_sizes_for_topology(ind.topology,
+                                                                                       int(getattr(ind, "batch_size", 1)),
+                                                                                       evo_cfg.enable_subgraph_batch_mut)
             root = try_decode_to_root(ind, root_init, attach_hardware_leaves=attach_hardware_leaves)
             if root is None:
                 return
@@ -401,7 +416,9 @@ def initialize_population_with_seeds(
                     batch_size=batch_size,
                     strict_device_partition=strict_device_partition,
                 )
-                ind.sub_graph_batch_sizes = _sample_sub_graph_batch_sizes_for_topology(ind.topology, batch_size)
+                ind.sub_graph_batch_sizes = _sample_sub_graph_batch_sizes_for_topology(ind.topology,
+                                                                                       batch_size,
+                                                                                       evo_cfg.enable_subgraph_batch_mut)
             except Exception:
                 continue
             try_add(ind)
@@ -432,6 +449,7 @@ def initialize_population_with_seeds(
         )
         rand_pop = initialize_population(
             tmp_cfg,
+            evo_cfg,
             req_type_num=req_type_num,
             devices=devices_list,
             root_init=root_init,
@@ -501,9 +519,9 @@ def dominates(a: Individual, b: Individual) -> bool:
     """Return True if a Pareto-dominates b (maximize throughput, minimize latency)."""
     if a.objectives is None or b.objectives is None:
         return False
-    athr, alat = a.objectives
-    bthr, blat = b.objectives
-    return (athr >= bthr and alat <= blat) and (athr > bthr or alat < blat)
+    a_thr, a_lat = a.objectives
+    b_thr, b_lat = b.objectives
+    return (a_thr >= b_thr and a_lat <= b_lat) and (a_thr > b_thr or a_lat < b_lat)
 
 
 def fast_nondominated_sort(pop: List[Individual]) -> List[List[Individual]]:
@@ -1109,6 +1127,7 @@ def evolve(
     attach_hardware_leaves: bool = True,
     # 随机数种子
     random_seed: Optional[int] = None,
+    dse_out: Optional[str] = None,
 
 ) -> Tuple[Individual, List[Individual]]:
     '''
@@ -1132,6 +1151,7 @@ def evolve(
     if not with_pop_seeds:
         pop = initialize_population(
             init_cfg,
+            evo_cfg,
             req_type_num=req_type_num,
             devices=devices_list,
             root_init=root_init,
@@ -1141,6 +1161,7 @@ def evolve(
     else:
         pop = initialize_population_with_seeds(
             init_cfg,
+            evo_cfg,
             req_type_num=req_type_num,
             devices=devices_list,
             root_init=root_init,
@@ -1150,6 +1171,10 @@ def evolve(
             attach_hardware_leaves=attach_hardware_leaves,
             strict_device_partition=True,
         )
+
+    for init_ind in pop:
+        # dse scatter point
+        log_individual_json(init_ind, dse_out)
 
     cache: Dict[str, Tuple[float, float]] = {}
 
@@ -1182,8 +1207,8 @@ def evolve(
             ind.latency = lat
             ind.objectives = (thr, lat)
 
-            with open("./result/DSE.jsonl", "a", encoding="utf-8") as f:
-                f.write(json.dumps({"T": thr, "L": lat}, ensure_ascii=False) + "\n")
+            # dse scatter point
+            log_individual_json(ind, dse_out)
 
         except Exception as e:
             print("evaluate/write failed:", repr(e))
@@ -1262,6 +1287,7 @@ def evolve(
                         sub_graph_batch_sizes=dict(getattr(child, "sub_graph_batch_sizes", {})),
                     ),
                     mutation_kind,
+                    evo_cfg.enable_cache,
                 ),
             )
 

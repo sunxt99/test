@@ -12,7 +12,7 @@ from system.config import SystemConfig, ModelConfigs
 from exploration.decoder import RootInit
 from exploration.evolution_pareto import InitConfig, EvoConfig, evolve
 from exploration.fitness_adapter import make_fitness_fn, default_result_to_fitness
-from exploration.ind_io import print_individual, save_individual_json, load_individual_json
+from exploration.ind_io import print_individual,log_individual_json, save_individual_json, load_individual_json
 
 from parallelism.pcase import (
     build_case_0, build_case_1, build_case_2, build_case_3, build_case_4,
@@ -77,7 +77,7 @@ def main() -> None:
                           # batch_size_choices=(1,2,4,8,16,32,48,64,96,128,160,196)) # model2
                           # batch_size_choices=(1,2,4,8,16,32,48,64,96,112,128)) # model3
 
-    evo_cfg = EvoConfig(generations=10,
+    evo_cfg = EvoConfig(generations=5,
                         #generations=10,
                         elite_size=8,
                         # elite_size=5,
@@ -87,7 +87,9 @@ def main() -> None:
                         # p_topology_mut=0.55,
                         # p_numeric_mut=0.30,
                         # p_device_mut=0.15,
-                        enable_cache=True)
+                        enable_cache=True,
+                        enable_subgraph_batch_mut=True,
+                        )
 
     # 根据经验进行种群初值
     builders = {
@@ -109,15 +111,19 @@ def main() -> None:
         15: build_case_15,
     }
 
-    # pop_seed_indexes = [1,2,3,4]
     # pop_seed_indexes = [3,4]
-    pop_seed_indexes = [4,12]
+    pop_seed_indexes = [0,1,4,12]
     pop_seed_roots = []
     for i in pop_seed_indexes:
         if i not in builders:
             continue
         root, _leaves = builders[i](args.req_type_num, model_cfg.layer_num)
         pop_seed_roots.append(root)
+
+    # dse scatter point
+    if args.dse_out:
+        if os.path.exists(args.dse_out):
+            os.remove(args.dse_out)
 
     # DSE 主函数
     best, pop = evolve(
@@ -131,6 +137,7 @@ def main() -> None:
         pop_seed_roots=pop_seed_roots,
         attach_hardware_leaves=True,
         random_seed=42,
+        dse_out=args.dse_out,
     )
 
     # Dump Pareto front (rank-0) objectives to jsonl if requested
@@ -142,23 +149,9 @@ def main() -> None:
         for ind in pareto_front:
             if getattr(ind, "objectives", None) is None:
                 continue
-            T, L = float(ind.objectives[0]), float(ind.objectives[1])
-            with open(args.out, "a", encoding="utf-8") as f:
-                f.write(json.dumps({"T": T, 
-                                    "L": L}, ensure_ascii=False) + "\n")
+            log_individual_json(ind, args.out)
 
-    # print("\n Best")
-    # print("Best fitness:", best.fitness)
-    # print("Best Throughput:", best.throughput)
-    # print("Best Latency:", best.latency)
-    # print("Best uid:", best.uid)
-    # print(best.topology.nodes)
-    # print("dp_attr:", best.attrs.dp_attr)
-    # print("pp_attr:", best.attrs.pp_attr)
-    # print("tp_attr:", best.attrs.tp_attr)
-    # print("xp_attr:", best.attrs.xp_attr)
-    # print(best.device_assign.leaf_to_devices)
-    # print("\n")
+
 
     # print example
     print_individual(best)

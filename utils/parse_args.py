@@ -44,5 +44,6 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42, help="Random seed.")
     p.add_argument("--verbose", action="store_true", help="Print verbose logs.")
     p.add_argument("--out", type=str, default=None, help="Output file path")
+    p.add_argument("--dse-out", type=str, default=None, help="Output file path of DSE process")
 
     return p.parse_args()

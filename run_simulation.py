@@ -40,6 +40,9 @@ def main():
     print(summarize_metrics(result, args.t_end))
     T, L, f_dist, p_dist = summarize_metrics_data(result, args.t_end)
     if args.out:
+        if os.path.exists(args.out):
+            os.remove(args.out)
+
         with open(args.out, "a", encoding="utf-8") as f:
             f.write(json.dumps({"T":T,
                                 "L":L,
