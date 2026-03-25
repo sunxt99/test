@@ -8,6 +8,7 @@ from typing import Any, List, Sequence
 from utils.parse_args import parse_args
 
 from system.config import SystemConfig, ModelConfigs
+from hardware.htree import HardwareTree
 
 from exploration.decoder import RootInit
 from exploration.evolution_pareto import InitConfig, EvoConfig, evolve
@@ -45,7 +46,9 @@ def main() -> None:
     )
     model_cfg = ModelConfigs[args.model_index]
 
-    devices: Sequence[int] = list(range(8))
+    htree = HardwareTree(args.hcase_index)
+    devices: Sequence[int] = [int(d.idx) for d in htree.devices]
+    device_type_by_id = {int(d.idx): str(d.meta.get("type", d.name)) for d in htree.devices}
 
     # req_prob = [0.8, 0.2]
     req_prob = ast.literal_eval(args.req_dist)
@@ -66,27 +69,37 @@ def main() -> None:
         result_to_fitness=result_to_fitness,
     )
 
-    init_cfg = InitConfig(population_size=30,
+    init_cfg = InitConfig(population_size=80,
                           # population_size=30,
                           max_depth=4,
                           max_children=8,
                           p_stop_expand=0.40,
+
+                          p_pattern_seed_init = 0.5,
+                          p_stratified_init = 0.3,
+                          p_random_init = 0.2,
+
                           # batch_size_choices=(256,))  # model0
-                          batch_size_choices=(1,2,4,8,16,32,64,128,196,256,384,512))  # model0
+                          batch_size_choices=(1,2,4,8,16,32,64,128,160,196,256,320,352,384,416,448,480,512))  # model0
                           # batch_size_choices=(1,2,4,8,16,32,48,64,96,128,160,196)) # model1
                           # batch_size_choices=(1,2,4,8,16,32,48,64,96,128,160,196)) # model2
                           # batch_size_choices=(1,2,4,8,16,32,48,64,96,112,128)) # model3
 
-    evo_cfg = EvoConfig(generations=5,
-                        #generations=10,
-                        elite_size=8,
-                        # elite_size=5,
-                        p_topology_mut=0.15,
-                        p_numeric_mut=0.50,
-                        p_device_mut=0.35,
-                        # p_topology_mut=0.55,
-                        # p_numeric_mut=0.30,
-                        # p_device_mut=0.15,
+
+    evo_cfg = EvoConfig(generations=3,
+                        elite_size=15,
+
+                        p_rewrite_mut=0.65,
+                        p_numeric_mut=0.35,
+                        p_mapping_refine_mut=0.00,
+
+                        p_skeleton_expand=0.25,
+                        p_local_refine=0.30,
+                        p_relabel=0.15,
+                        p_repartition=0.20,
+                        p_rollback=0.10,
+                        rewrite_max_steps=4,
+
                         enable_cache=True,
                         enable_subgraph_batch_mut=True,
                         )
@@ -112,6 +125,7 @@ def main() -> None:
     }
 
     # pop_seed_indexes = [3,4]
+    # pop_seed_indexes = [0,1,4,12]
     pop_seed_indexes = [0,1,4,12]
     pop_seed_roots = []
     for i in pop_seed_indexes:
@@ -121,9 +135,9 @@ def main() -> None:
         pop_seed_roots.append(root)
 
     # dse scatter point
-    if args.dse_out:
-        if os.path.exists(args.dse_out):
-            os.remove(args.dse_out)
+    # if args.dse_out:
+    #     if os.path.exists(args.dse_out):
+    #         os.remove(args.dse_out)
 
     # DSE 主函数
     best, pop = evolve(
@@ -132,6 +146,7 @@ def main() -> None:
         req_type_num=args.req_type_num,
         devices=devices,
         root_init=root_init,
+        device_type_by_id=device_type_by_id,
         fitness_fn=fitness_fn,
         with_pop_seeds=True,
         pop_seed_roots=pop_seed_roots,
@@ -142,9 +157,8 @@ def main() -> None:
 
     # Dump Pareto front (rank-0) objectives to jsonl if requested
     if args.out:
-        if os.path.exists(args.out):
-            os.remove(args.out)
-
+        # if os.path.exists(args.out):
+        #     os.remove(args.out)
         pareto_front = [ind for ind in pop if getattr(ind, "pareto_rank", None) == 0]
         for ind in pareto_front:
             if getattr(ind, "objectives", None) is None:
