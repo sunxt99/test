@@ -118,10 +118,17 @@ class Topology:
         return [nid for nid in self._id2gene.keys() if len(self.children_of(nid)) == 0]
 
     def check_legality(self) -> None:
-        # XP arity in parallel topology (must be 2 parallel children)
+        # XP legality:
+        # - internal XP: exactly 2 parallel children
+        # - leaf XP: allowed, but its two branches will be realized as 2 devices
         for nid, g in self._id2gene.items():
-            if g.ptype == Parallelism.XP and len(self.children_of(nid)) != 2:
-                raise ValueError(f"XP node {nid} must have exactly 2 parallel children.")
+            if g.ptype != Parallelism.XP:
+                continue
+            child_k = len(self.children_of(nid))
+            if child_k not in (0, 2):
+                raise ValueError(
+                    f"XP node {nid} must either be a leaf or have exactly 2 parallel children."
+                )
 
         # order constraints along root->leaf path
         def dfs(u: int, seen_pp: bool, seen_tp: bool) -> None:
@@ -189,9 +196,20 @@ class Attrs:
                 if v is None or len(v) != k:
                     raise ValueError(f"TP node {nid}: expected len={k}")
             elif t == Parallelism.XP:
-                # XP must have exactly 2 parallel children
-                if parallel_k != 2:
-                    raise ValueError(f"XP node {nid}: must have 2 parallel children.")
+                # XP supports two realizations:
+                # - internal XP: two parallel children
+                # - leaf XP: exactly two devices, each device is one XP branch
+                if parallel_k == 0:
+                    dev_group = device_assign.leaf_to_devices.get(nid)
+                    if not isinstance(dev_group, list) or len(dev_group) != 2:
+                        raise ValueError(
+                            f"XP leaf node {nid}: expected exactly 2 devices, got {dev_group}"
+                        )
+                elif parallel_k != 2:
+                    raise ValueError(
+                        f"XP node {nid}: must either be a leaf or have 2 parallel children."
+                    )
+
                 v = self.xp_attr.get(nid)
                 if v is None or len(v) != 2:
                     raise ValueError(f"XP node {nid}: expected 2 tags.")

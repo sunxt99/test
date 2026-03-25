@@ -101,7 +101,8 @@ def main() -> None:
                         rewrite_max_steps=4,
 
                         enable_cache=True,
-                        enable_subgraph_batch_mut=True,
+                        # enable_subgraph_batch_mut=True,
+                        enable_subgraph_batch_mut=False,
                         )
 
     # 根据经验进行种群初值
@@ -126,7 +127,7 @@ def main() -> None:
 
     # pop_seed_indexes = [3,4]
     # pop_seed_indexes = [0,1,4,12]
-    pop_seed_indexes = [0,1,4,12]
+    pop_seed_indexes = []
     pop_seed_roots = []
     for i in pop_seed_indexes:
         if i not in builders:

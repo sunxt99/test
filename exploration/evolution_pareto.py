@@ -1375,8 +1375,8 @@ def evolve(
         if dse_out:
             log_individual_json(init_ind, dse_out)
             print("\n [init ind]", init_ind.batch_size, init_ind.throughput, init_ind.latency)
-            # print(format_topology(init_ind, True, True))
-            # print("\n")
+            print(format_topology(init_ind, True, True))
+            print("\n")
 
     cache: Dict[str, Tuple[float, float]] = {}
 
@@ -1414,8 +1414,8 @@ def evolve(
             if dse_out:
                 log_individual_json(ind, dse_out)
                 print("\n [eval ind] ", ind.batch_size, ind.throughput, ind.latency)
-                # print(format_topology(ind, True, True))
-                # print("\n")
+                print(format_topology(ind, True, True))
+                print("\n")
 
         except Exception as e:
             print("evaluate/write failed:", repr(e))

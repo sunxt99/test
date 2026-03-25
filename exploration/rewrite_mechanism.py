@@ -245,7 +245,10 @@ def individual_to_symbolic(ind: Individual, *, device_type_by_id: Dict[int, str]
         for did in ind.device_assign.leaf_to_devices.get(nid, []):
             dtype = str(device_type_by_id[int(did)])
             counts[dtype] = counts.get(dtype, 0) + 1
-        return SymbolicNode(op=ptype, device_counts=counts, hint=hint, closed=(ptype != Parallelism.XP))
+        leaf_closed = True
+        if ptype == Parallelism.XP:
+            leaf_closed = sum(int(v) for v in counts.values()) == 2
+        return SymbolicNode(op=ptype, device_counts=counts, hint=hint, closed=leaf_closed)
 
     root = build(topo.root_id)
     root.recompute_counts()
@@ -352,10 +355,13 @@ def _materialize_attrs(node: SymbolicNode, node_id: int, attrs: Attrs, *, req_ty
 
 def _ensure_materializable(root: SymbolicNode) -> None:
     for node in root.walk():
-        if node.op == Parallelism.XP and len(node.children) != 2:
-            raise ValueError("XP must be materialized as a binary parallel node.")
-        if node.op == Parallelism.XP and not node.children:
-            raise ValueError("Unclosed XP leaf cannot be materialized.")
+        if node.op == Parallelism.XP:
+            if node.children:
+                if len(node.children) != 2:
+                    raise ValueError("Internal XP must be materialized as a binary parallel node.")
+            else:
+                if node.total_devices() != 2:
+                    raise ValueError("XP leaf must own exactly 2 devices.")
         if node.children:
             if not node.closed:
                 raise ValueError(f"Node {node.pretty()} is not closed.")
@@ -377,9 +383,10 @@ def has_open_nodes(root: SymbolicNode) -> bool:
         if not bool(node.closed):
             return True
         if node.op == Parallelism.XP:
-            if not node.children:
-                return True
-            if len(node.children) != 2:
+            if node.children:
+                if len(node.children) != 2:
+                    return True
+            elif node.total_devices() != 2:
                 return True
     return False
 
@@ -387,7 +394,7 @@ def has_open_nodes(root: SymbolicNode) -> bool:
 # -----------------------------
 # Initialization pattern library
 # Fixed, hand-written seed templates driven by device abstraction.
-# Every pattern returned here is already CLOSED and directly materializable.
+# Every pattern returned here is already CLOSED and directly materializable. XP may be internal-binary or a leaf with exactly 2 devices.
 # -----------------------------
 
 def _all_device_counts(device_type_to_ids: Dict[str, List[int]]) -> Dict[str, int]:
@@ -652,9 +659,17 @@ def default_init_patterns(device_type_to_ids: Dict[str, List[int]]) -> List[Init
 
 
 def default_patterns() -> List[PatternSpec]:
+    xp_hint = {"xp_attr": [XpTag.ATTENTION, XpTag.LINEAR]}
+
     return [
+        # ------------------------------------------------------------------
+        # Skeleton expansion rules that DIRECTLY generate closed XP leaves.
+        # This matches the current semantics:
+        #   - internal XP => exactly 2 parallel children
+        #   - leaf XP     => exactly 2 devices
+        # ------------------------------------------------------------------
         PatternSpec(
-            name="dp_leaf_npu4_pim4_to_dp_xp_tp_tp",
+            name="dp_leaf_npu4_pim4_to_dp_xp_leaf_tp_tp",
             family=RewriteFamily.SKELETON_EXPANSION,
             match={
                 "op": Parallelism.DP,
@@ -665,34 +680,61 @@ def default_patterns() -> List[PatternSpec]:
             rewrite={
                 "op": "DP",
                 "children": [
-                    {"op": "XP", "device_counts": {"NPU": 2, "PIM": 2}, "closed": False},
-                    {"op": "TP", "device_counts": {"NPU": 2}, "closed": True},
-                    {"op": "TP", "device_counts": {"PIM": 2}, "closed": True},
+                    {"op": "XP", "device_counts": {"NPU": 1, "PIM": 1}, "hint": xp_hint, "closed": True},
+                    {"op": "TP", "device_counts": {"NPU": 3}, "closed": True},
+                    {"op": "TP", "device_counts": {"PIM": 3}, "closed": True},
                 ],
-                "hint": {"dp_attr": [[0, 1, 0], [1, 0, 0], [0, 0, 1]]},
+                "hint": {"dp_attr": [[1.0, 0.5, 0.0], [0.5, 0.0, 1.0], [0.0, 1.0, 0.5]]},
                 "closed": True,
             },
-            weight=1.0,
+            weight=1.20,
         ),
         PatternSpec(
-            name="xp_leaf_npu2_pim2_to_xp_tp_tp",
+            name="pp_leaf_npu4_pim4_to_pp_xp_leaf_tp_tp",
+            family=RewriteFamily.SKELETON_EXPANSION,
+            match={
+                "op": Parallelism.PP,
+                "leaf": True,
+                "closed": True,
+                "device_counts": {"NPU": 4, "PIM": 4},
+            },
+            rewrite={
+                "op": "PP",
+                "children": [
+                    {"op": "XP", "device_counts": {"NPU": 1, "PIM": 1}, "hint": xp_hint, "closed": True},
+                    {"op": "TP", "device_counts": {"NPU": 3}, "closed": True},
+                    {"op": "TP", "device_counts": {"PIM": 3}, "closed": True},
+                ],
+                "hint": {"pp_attr": [1.0, 0.6, 0.6]},
+                "closed": True,
+            },
+            weight=0.90,
+        ),
+
+        # ------------------------------------------------------------------
+        # Repartition / rollback around the new XP-leaf shape.
+        # These rules let the search move between:
+        #   XP leaf (2 devices)  <->  internal XP with 2 TP children
+        # ------------------------------------------------------------------
+        PatternSpec(
+            name="xp_leaf_npu1_pim1_to_xp_tp_tp",
             family=RewriteFamily.LOCAL_REFINEMENT,
             match={
                 "op": Parallelism.XP,
                 "leaf": True,
-                "closed": False,
-                "device_counts": {"NPU": 2, "PIM": 2},
+                "closed": True,
+                "device_counts": {"NPU": 1, "PIM": 1},
             },
             rewrite={
                 "op": "XP",
                 "children": [
-                    {"op": "TP", "device_counts": {"NPU": 2}, "closed": True},
-                    {"op": "TP", "device_counts": {"PIM": 2}, "closed": True},
+                    {"op": "TP", "device_counts": {"NPU": 1}, "closed": True},
+                    {"op": "TP", "device_counts": {"PIM": 1}, "closed": True},
                 ],
-                "hint": {"xp_attr": [XpTag.ATTENTION, XpTag.LINEAR]},
+                "hint": {"xp_attr": [XpTag.LINEAR, XpTag.ATTENTION]},
                 "closed": True,
             },
-            weight=1.0,
+            weight=0.90,
         ),
         PatternSpec(
             name="xp_leaf_npu2_to_xp_tp_tp",
@@ -700,7 +742,7 @@ def default_patterns() -> List[PatternSpec]:
             match={
                 "op": Parallelism.XP,
                 "leaf": True,
-                "closed": False,
+                "closed": True,
                 "device_counts": {"NPU": 2},
             },
             rewrite={
@@ -709,10 +751,10 @@ def default_patterns() -> List[PatternSpec]:
                     {"op": "TP", "device_counts": {"NPU": 1}, "closed": True},
                     {"op": "TP", "device_counts": {"NPU": 1}, "closed": True},
                 ],
-                "hint": {"xp_attr": [XpTag.ATTENTION, XpTag.LINEAR]},
+                "hint": xp_hint,
                 "closed": True,
             },
-            weight=1.0,
+            weight=0.85,
         ),
         PatternSpec(
             name="xp_leaf_pim2_to_xp_tp_tp",
@@ -720,7 +762,7 @@ def default_patterns() -> List[PatternSpec]:
             match={
                 "op": Parallelism.XP,
                 "leaf": True,
-                "closed": False,
+                "closed": True,
                 "device_counts": {"PIM": 2},
             },
             rewrite={
@@ -729,9 +771,9 @@ def default_patterns() -> List[PatternSpec]:
                     {"op": "TP", "device_counts": {"PIM": 1}, "closed": True},
                     {"op": "TP", "device_counts": {"PIM": 1}, "closed": True},
                 ],
-                "hint": {"xp_attr": [XpTag.ATTENTION, XpTag.LINEAR]},
+                "hint": xp_hint,
                 "closed": True,
             },
-            weight=1.0,
-        ),
+            weight=0.85,
+        )
     ]
