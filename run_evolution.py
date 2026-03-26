@@ -89,8 +89,8 @@ def main() -> None:
     evo_cfg = EvoConfig(generations=3,
                         elite_size=15,
 
-                        p_rewrite_mut=0.65,
-                        p_numeric_mut=0.35,
+                        p_rewrite_mut=0.5,
+                        p_numeric_mut=0.5,
                         p_mapping_refine_mut=0.00,
 
                         p_skeleton_expand=0.25,
@@ -101,8 +101,8 @@ def main() -> None:
                         rewrite_max_steps=4,
 
                         enable_cache=True,
-                        # enable_subgraph_batch_mut=True,
-                        enable_subgraph_batch_mut=False,
+                        enable_subgraph_batch_mut=True,
+                        # enable_subgraph_batch_mut=False,
                         )
 
     # 根据经验进行种群初值

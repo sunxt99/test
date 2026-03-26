@@ -158,7 +158,6 @@ def log_individual_json(ind: Individual, path:str) -> None:
 def individual_to_dict(ind: Individual) -> Dict[str, Any]:
     topo = ind.topology
     data: Dict[str, Any] = {
-        "version": "v4",
         "uid": ind.uid,
         "devices": list(ind.devices),
         "req_type_num": ind.req_type_num,
@@ -189,9 +188,6 @@ def individual_to_dict(ind: Individual) -> Dict[str, Any]:
 
 
 def individual_from_dict(data: Dict[str, Any]) -> Individual:
-    if data.get("version") not in {"v3", "v4"}:
-        raise ValueError(f"Unsupported version: {data.get('version')}")
-
     topo_nodes = []
     for item in data["topology"]:
         topo_nodes.append(

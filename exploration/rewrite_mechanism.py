@@ -564,8 +564,8 @@ def default_init_patterns(device_type_to_ids: Dict[str, List[int]]) -> List[Init
             for dtype, cnt in sorted(all_counts.items())
         ]
         add("dp_split_by_type", "by_type_split", {"op": "DP", "children": children, "closed": True}, 1.2)
-        add("pp_split_by_type", "by_type_split", {"op": "PP", "children": children, "closed": True}, 1.0)
-        add("tp_split_by_type", "by_type_split", {"op": "TP", "children": children, "closed": True}, 0.95)
+        add("tp_split_by_type", "by_type_split", {"op": "TP", "children": children, "closed": True}, 1.1)
+        add("pp_split_by_type", "by_type_split", {"op": "PP", "children": children, "closed": True}, 0.8)
 
     # 3) Closed two-way partitions across all devices. These are the main source
     #    of robust, diverse initial seeds.
@@ -659,7 +659,7 @@ def default_init_patterns(device_type_to_ids: Dict[str, List[int]]) -> List[Init
 
 
 def default_patterns() -> List[PatternSpec]:
-    xp_hint = {"xp_attr": [XpTag.ATTENTION, XpTag.LINEAR]}
+    xp_hint = {"xp_attr": [XpTag.LINEAR, XpTag.ATTENTION]}
 
     return [
         # ------------------------------------------------------------------
@@ -669,7 +669,7 @@ def default_patterns() -> List[PatternSpec]:
         #   - leaf XP     => exactly 2 devices
         # ------------------------------------------------------------------
         PatternSpec(
-            name="dp_leaf_npu4_pim4_to_dp_xp_leaf_tp_tp",
+            name="dp_leaf_npu4_pim4_to_dp_xp_tp_tp",
             family=RewriteFamily.SKELETON_EXPANSION,
             match={
                 "op": Parallelism.DP,
@@ -690,32 +690,52 @@ def default_patterns() -> List[PatternSpec]:
             weight=1.20,
         ),
         PatternSpec(
-            name="pp_leaf_npu4_pim4_to_pp_xp_leaf_tp_tp",
+            name="tp_leaf_npu4_pim4_to_dp_xp_tp_tp",
             family=RewriteFamily.SKELETON_EXPANSION,
             match={
-                "op": Parallelism.PP,
+                "op": Parallelism.TP,
                 "leaf": True,
                 "closed": True,
                 "device_counts": {"NPU": 4, "PIM": 4},
             },
             rewrite={
-                "op": "PP",
+                "op": "DP",
                 "children": [
-                    {"op": "XP", "device_counts": {"NPU": 1, "PIM": 1}, "hint": xp_hint, "closed": True},
-                    {"op": "TP", "device_counts": {"NPU": 3}, "closed": True},
-                    {"op": "TP", "device_counts": {"PIM": 3}, "closed": True},
+                    {"op": "XP", "device_counts": {"NPU": 2, "PIM": 2}, "hint": xp_hint, "closed": False},
+                    {"op": "TP", "device_counts": {"NPU": 2}, "closed": True},
+                    {"op": "TP", "device_counts": {"PIM": 2}, "closed": True},
                 ],
-                "hint": {"pp_attr": [1.0, 0.6, 0.6]},
+                # "hint": {"dp_attr": [[1.0, 0.5, 0.0], [0.5, 0.0, 1.0], [0.0, 1.0, 0.5]]},
+                "hint": {"dp_attr": [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]},
                 "closed": True,
             },
-            weight=0.90,
+            weight=1.20,
         ),
-
         # ------------------------------------------------------------------
         # Repartition / rollback around the new XP-leaf shape.
         # These rules let the search move between:
         #   XP leaf (2 devices)  <->  internal XP with 2 TP children
         # ------------------------------------------------------------------
+        PatternSpec(
+            name="xp_leaf_npu2_pim2_to_xp_tp_tp",
+            family=RewriteFamily.LOCAL_REFINEMENT,
+            match={
+                "op": Parallelism.XP,
+                "leaf": True,
+                "closed": False,
+                "device_counts": {"NPU": 2, "PIM": 2},
+            },
+            rewrite={
+                "op": "XP",
+                "children": [
+                    {"op": "TP", "device_counts": {"NPU": 2}, "closed": True},
+                    {"op": "TP", "device_counts": {"PIM": 2}, "closed": True},
+                ],
+                "hint": xp_hint,
+                "closed": True,
+            },
+            weight=0.90,
+        ),
         PatternSpec(
             name="xp_leaf_npu1_pim1_to_xp_tp_tp",
             family=RewriteFamily.LOCAL_REFINEMENT,
@@ -731,7 +751,7 @@ def default_patterns() -> List[PatternSpec]:
                     {"op": "TP", "device_counts": {"NPU": 1}, "closed": True},
                     {"op": "TP", "device_counts": {"PIM": 1}, "closed": True},
                 ],
-                "hint": {"xp_attr": [XpTag.LINEAR, XpTag.ATTENTION]},
+                "hint": xp_hint,
                 "closed": True,
             },
             weight=0.90,

@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import random
 import math
 import copy
+import uuid
 import hashlib
 from collections import deque
 import json
@@ -23,7 +24,12 @@ from exploration.individual import (
 
 from exploration.decoder import RootInit, try_decode_to_root
 from exploration.seed_from_pcase import individual_from_pcase_root
-from exploration.ind_io import log_individual_json, print_individual, format_topology
+from exploration.ind_io import (
+    log_individual_json,
+    print_individual,
+    format_topology,
+    save_individual_json
+)
 from exploration.rewrite_mechanism import (
     InitPatternSpec,
     RewriteEngine,
@@ -282,6 +288,10 @@ def _mutate_sub_graph_batch_sizes(
     child_begin_ids = _detect_begin_node_ids(child.topology)
     upper = max(1, int(getattr(child, "batch_size", 1)))
 
+    # 不做 subgraph 级搜索时，所有 begin-node 直接绑定到 global batch size
+    if not enable_subgraph_batch_mut:
+        return {int(nid): int(upper) for nid in child_begin_ids}
+
     if mutation_kind == "topology":
         return _sample_sub_graph_batch_sizes_for_topology(child.topology, upper, enable_subgraph_batch_mut)
 
@@ -289,15 +299,13 @@ def _mutate_sub_graph_batch_sizes(
     if (not parent_map) or (set(parent_map.keys()) != set(int(x) for x in child_begin_ids)):
         return _sample_sub_graph_batch_sizes_for_topology(child.topology, upper, enable_subgraph_batch_mut)
 
-    if enable_subgraph_batch_mut:
-        r = random.random()
-        if r < 0.60:
-            return {int(nid): max(1, min(upper, int(parent_map[int(nid)]))) for nid in child_begin_ids}
-        if r < 0.80:
-            return _tweak_sub_graph_batch_sizes(parent_map, child_begin_ids, upper)
-        return _sample_sub_graph_batch_sizes_for_topology(child.topology, upper, enable_subgraph_batch_mut)
-    else:
+    r = random.random()
+    if r < 0.60:
         return {int(nid): max(1, min(upper, int(parent_map[int(nid)]))) for nid in child_begin_ids}
+    if r < 0.80:
+        return _tweak_sub_graph_batch_sizes(parent_map, child_begin_ids, upper)
+    return _sample_sub_graph_batch_sizes_for_topology(child.topology, upper, enable_subgraph_batch_mut)
+
 
 def sample_attrs(topo: Topology, device_assign: DeviceAssign, req_type_num: int, init_cfg: InitConfig) -> Attrs:
     """
@@ -1374,9 +1382,10 @@ def evolve(
         # dse scatter point
         if dse_out:
             log_individual_json(init_ind, dse_out)
-            print("\n [init ind]", init_ind.batch_size, init_ind.throughput, init_ind.latency)
+            print("\n [init ind] ", init_ind.uid, init_ind.batch_size, init_ind.throughput, init_ind.latency)
             print(format_topology(init_ind, True, True))
             print("\n")
+            save_individual_json(init_ind, f"./debug/individuals/init_{init_ind.uid}.json")
 
     cache: Dict[str, Tuple[float, float]] = {}
 
@@ -1413,9 +1422,11 @@ def evolve(
             # dse scatter point
             if dse_out:
                 log_individual_json(ind, dse_out)
-                print("\n [eval ind] ", ind.batch_size, ind.throughput, ind.latency)
+                print("\n [eval ind] ", ind.uid, ind.batch_size, ind.throughput, ind.latency)
                 print(format_topology(ind, True, True))
+                save_individual_json(ind, f"./debug/individuals/eval_{ind.uid}.json")
                 print("\n")
+
 
         except Exception as e:
             print("evaluate/write failed:", repr(e))
@@ -1476,6 +1487,7 @@ def evolve(
             # NOTE: some mutation ops may return the parent object; avoid in-place edits.
             child_batch_size = int(random.choice(init_cfg.batch_size_choices))
             child = copy.deepcopy(child)
+            child.batch_size = child_batch_size
             child.sub_graph_batch_sizes=_mutate_sub_graph_batch_sizes(
                 parent,
                 Individual(
