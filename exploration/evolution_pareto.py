@@ -35,6 +35,7 @@ from exploration.rewrite_mechanism import (
     RewriteEngine,
     RewriteFamily,
     default_init_patterns,
+    default_numeric_patterns,
     default_patterns,
     has_open_nodes,
     individual_to_symbolic,
@@ -92,6 +93,8 @@ class EvoConfig:
     tournament_k: int = 3
     enable_cache: bool = True
     enable_subgraph_batch_mut: bool = False
+    subgraph_batch_max_mutated: int = 1
+    numeric_mutation_max_targets: int = 1
 
     def __post_init__(self) -> None:
         if self.p_topology_mut is not None or self.p_device_mut is not None:
@@ -235,47 +238,143 @@ def _detect_begin_node_ids(topo: Topology) -> List[int]:
     return out
 
 
-def _sample_sub_graph_batch_sizes_for_topology(topo: Topology,
-                                               max_batch_lo: int,
-                                               enable_subgraph_batch_mut: bool) -> Dict[int, int]:
+def _subtree_device_ids(ind: Individual, node_id: int) -> List[int]:
+    topo = ind.topology
+    out: List[int] = []
+
+    def dfs(nid: int) -> None:
+        children = topo.children_of(nid)
+        if not children:
+            out.extend(int(d) for d in ind.device_assign.leaf_to_devices.get(nid, []))
+            return
+        for cid in children:
+            dfs(cid)
+
+    dfs(int(node_id))
+    return out
+
+
+def _subgraph_contains_pim(
+    ind: Individual,
+    node_id: int,
+    device_type_by_id: Optional[Dict[int, str]],
+) -> bool:
+    dtype_map = device_type_by_id or {int(d): str(int(d)) for d in ind.devices}
+    for did in _subtree_device_ids(ind, int(node_id)):
+        dtype = str(dtype_map.get(int(did), "")).upper()
+        if "PIM" in dtype:
+            return True
+    return False
+
+
+def _eligible_pim_begin_ids(
+    ind: Individual,
+    begin_ids: Sequence[int],
+    device_type_by_id: Optional[Dict[int, str]],
+) -> List[int]:
+    return [
+        int(nid)
+        for nid in begin_ids
+        if _subgraph_contains_pim(ind, int(nid), device_type_by_id)
+    ]
+
+
+def _sample_sub_graph_batch_sizes_for_topology(
+    ind: Individual,
+    max_batch_lo: int,
+    enable_subgraph_batch_mut: bool,
+    *,
+    device_type_by_id: Optional[Dict[int, str]] = None,
+    max_mutated_subgraphs: int = 1,
+) -> Dict[int, int]:
     """
-    Resample sub-graph batch sizes with a mixed strategy:
-      - 70%: reset every begin node to the global upper bound
-      - 30%: true random resampling in [1, max_batch_lo]
+    Resample sub-graph batch sizes with PIM-aware constraints.
+
+    Rule:
+      - begin-node sub-graphs containing PIM devices may use a smaller local batch size
+      - non-PIM sub-graphs stay at the global batch size
+      - at most `max_mutated_subgraphs` begin nodes are allowed to deviate from the global batch size
     """
-    begin_ids = _detect_begin_node_ids(topo)
+    begin_ids = _detect_begin_node_ids(ind.topology)
     upper = max(1, int(max_batch_lo))
+    child_map = {int(nid): int(upper) for nid in begin_ids}
 
-    if enable_subgraph_batch_mut:
-        if random.random() < 0.50:
-            return {int(nid): int(upper) for nid in begin_ids}
-        return {int(nid): int(random.randint(1, upper)) for nid in begin_ids}
-    else:
-        return {int(nid): int(upper) for nid in begin_ids}
+    if (not enable_subgraph_batch_mut) or upper <= 1:
+        return child_map
+
+    pim_begin_ids = _eligible_pim_begin_ids(ind, begin_ids, device_type_by_id)
+    if not pim_begin_ids:
+        return child_map
+
+    max_touch = max(0, int(max_mutated_subgraphs))
+    if max_touch <= 0:
+        return child_map
+
+    if random.random() < 0.50:
+        return child_map
+
+    touch_k = random.randint(1, min(max_touch, len(pim_begin_ids)))
+    for nid in random.sample(pim_begin_ids, k=touch_k):
+        child_map[int(nid)] = int(random.randint(1, upper - 1 if upper > 1 else 1))
+    return child_map
 
 
-def _tweak_sub_graph_batch_sizes(parent_map: Dict[int, int], child_begin_ids: Sequence[int], max_batch_lo: int) -> Dict[int, int]:
+def _tweak_sub_graph_batch_sizes(
+    parent_map: Dict[int, int],
+    child: Individual,
+    child_begin_ids: Sequence[int],
+    max_batch_lo: int,
+    *,
+    device_type_by_id: Optional[Dict[int, str]] = None,
+    max_mutated_subgraphs: int = 1,
+) -> Dict[int, int]:
     """Micro-tune sub-graph batch sizes only around the parent's assignments."""
     upper = max(1, int(max_batch_lo))
     if not child_begin_ids:
         return {}
 
+    pim_begin_ids = set(_eligible_pim_begin_ids(child, child_begin_ids, device_type_by_id))
     child_map: Dict[int, int] = {}
-    touched = False
     for nid in child_begin_ids:
-        base = int(parent_map.get(int(nid), upper))
-        base = max(1, min(upper, base))
-        if random.random() < 0.6:
-            delta = random.choice([-2, -1, 1, 2])
-            base = max(1, min(upper, base + delta))
-            touched = True
-        child_map[int(nid)] = int(base)
+        nid = int(nid)
+        if nid in pim_begin_ids:
+            base = int(parent_map.get(nid, upper))
+            child_map[nid] = max(1, min(upper, base))
+        else:
+            child_map[nid] = int(upper)
 
-    if (not touched) and child_begin_ids:
-        nid = int(random.choice(list(child_begin_ids)))
-        base = child_map[nid]
-        delta = random.choice([-2, -1, 1, 2])
-        child_map[nid] = max(1, min(upper, base + delta))
+    if upper <= 1:
+        return child_map
+
+    mutable_ids = [nid for nid in child_begin_ids if int(nid) in pim_begin_ids]
+    max_touch = max(0, int(max_mutated_subgraphs))
+    if (not mutable_ids) or max_touch <= 0:
+        return child_map
+
+    touch_k = random.randint(1, min(max_touch, len(mutable_ids)))
+    touched = False
+    for nid in random.sample([int(x) for x in mutable_ids], k=touch_k):
+        base = int(child_map[nid])
+        op = random.choices(
+            ["decrease", "increase", "resample"],
+            weights=[0.50, 0.20, 0.30],
+            k=1,
+        )[0]
+        if op == "decrease":
+            child_map[nid] = int(random.randint(1, base))
+        elif op == "increase":
+            child_map[nid] = int(random.randint(base, upper))
+        else:
+            child_map[nid] = int(random.randint(1, upper))
+        touched = touched or (child_map[nid] != base)
+
+    if (not touched) and mutable_ids:
+        nid = int(random.choice([int(x) for x in mutable_ids]))
+        base = int(child_map[nid])
+        if base > 1:
+            child_map[nid] = base - 1
+        elif upper > base:
+            child_map[nid] = base + 1
     return child_map
 
 
@@ -283,7 +382,10 @@ def _mutate_sub_graph_batch_sizes(
     parent: Individual,
     child: Individual,
     mutation_kind: str,
-    enable_subgraph_batch_mut: bool
+    enable_subgraph_batch_mut: bool,
+    *,
+    device_type_by_id: Optional[Dict[int, str]] = None,
+    max_mutated_subgraphs: int = 1,
 ) -> Dict[int, int]:
     child_begin_ids = _detect_begin_node_ids(child.topology)
     upper = max(1, int(getattr(child, "batch_size", 1)))
@@ -293,18 +395,51 @@ def _mutate_sub_graph_batch_sizes(
         return {int(nid): int(upper) for nid in child_begin_ids}
 
     if mutation_kind == "topology":
-        return _sample_sub_graph_batch_sizes_for_topology(child.topology, upper, enable_subgraph_batch_mut)
+        return _sample_sub_graph_batch_sizes_for_topology(
+            child,
+            upper,
+            enable_subgraph_batch_mut,
+            device_type_by_id=device_type_by_id,
+            max_mutated_subgraphs=max_mutated_subgraphs,
+        )
 
     parent_map = {int(k): int(v) for k, v in getattr(parent, "sub_graph_batch_sizes", {}).items()}
     if (not parent_map) or (set(parent_map.keys()) != set(int(x) for x in child_begin_ids)):
-        return _sample_sub_graph_batch_sizes_for_topology(child.topology, upper, enable_subgraph_batch_mut)
+        return _sample_sub_graph_batch_sizes_for_topology(
+            child,
+            upper,
+            enable_subgraph_batch_mut,
+            device_type_by_id=device_type_by_id,
+            max_mutated_subgraphs=max_mutated_subgraphs,
+        )
 
     r = random.random()
     if r < 0.60:
-        return {int(nid): max(1, min(upper, int(parent_map[int(nid)]))) for nid in child_begin_ids}
+        out: Dict[int, int] = {}
+        pim_begin_ids = set(_eligible_pim_begin_ids(child, child_begin_ids, device_type_by_id))
+        for nid in child_begin_ids:
+            nid = int(nid)
+            if nid in pim_begin_ids:
+                out[nid] = max(1, min(upper, int(parent_map.get(nid, upper))))
+            else:
+                out[nid] = int(upper)
+        return out
     if r < 0.80:
-        return _tweak_sub_graph_batch_sizes(parent_map, child_begin_ids, upper)
-    return _sample_sub_graph_batch_sizes_for_topology(child.topology, upper, enable_subgraph_batch_mut)
+        return _tweak_sub_graph_batch_sizes(
+            parent_map,
+            child,
+            child_begin_ids,
+            upper,
+            device_type_by_id=device_type_by_id,
+            max_mutated_subgraphs=max_mutated_subgraphs,
+        )
+    return _sample_sub_graph_batch_sizes_for_topology(
+        child,
+        upper,
+        enable_subgraph_batch_mut,
+        device_type_by_id=device_type_by_id,
+        max_mutated_subgraphs=max_mutated_subgraphs,
+    )
 
 
 def sample_attrs(topo: Topology, device_assign: DeviceAssign, req_type_num: int, init_cfg: InitConfig) -> Attrs:
@@ -407,12 +542,14 @@ def _evaluate_individual(
 
     try:
         res = fitness_fn(root, ind.batch_size)
-        thr, lat = _parse_objectives(res)
+        thr, lat, f_dist, p_dist = _parse_objectives(res)
         if (not math.isfinite(thr)) or (not math.isfinite(lat)):
             return False
         ind.throughput = thr
         ind.latency = lat
         ind.objectives = (thr, lat)
+        ind.f_dist = f_dist
+        ind.p_dist = p_dist
     except Exception:
         return False
     return True
@@ -454,6 +591,7 @@ def _make_individual_from_symbolic_seed(
     req_type_num: int,
     devices: Sequence[int],
     device_type_to_ids: Dict[str, List[int]],
+    device_type_by_id: Optional[Dict[int, str]] = None,
 ) -> Optional[Individual]:
     batch_size = int(random.choice(init_cfg.batch_size_choices))
     try:
@@ -469,9 +607,11 @@ def _make_individual_from_symbolic_seed(
         return None
 
     ind.sub_graph_batch_sizes = _sample_sub_graph_batch_sizes_for_topology(
-        ind.topology,
+        ind,
         batch_size,
         evo_cfg.enable_subgraph_batch_mut,
+        device_type_by_id=device_type_by_id,
+        max_mutated_subgraphs=evo_cfg.subgraph_batch_max_mutated,
     )
     return ind
 
@@ -513,6 +653,7 @@ def _fill_pattern_seeded_population(
             req_type_num=req_type_num,
             devices=devices,
             device_type_to_ids=device_type_to_ids,
+            device_type_by_id=device_type_by_id,
         )
         if ind is None:
             continue
@@ -577,6 +718,7 @@ def _fill_stratified_population(
             req_type_num=req_type_num,
             devices=devices,
             device_type_to_ids=device_type_to_ids,
+            device_type_by_id=device_type_by_id,
         )
         if ind is None:
             continue
@@ -599,6 +741,7 @@ def _fill_random_population(
     evo_cfg: EvoConfig,
     req_type_num: int,
     devices: Sequence[int],
+    device_type_by_id: Optional[Dict[int, str]],
     root_init: RootInit,
     fitness_fn: Callable[[Any, int], float],
     attach_hardware_leaves: bool,
@@ -633,11 +776,14 @@ def _fill_random_population(
             devices=devices_list,
             req_type_num=req_type_num,
             batch_size=batch_size,
-            sub_graph_batch_sizes=_sample_sub_graph_batch_sizes_for_topology(
-                topo,
-                batch_size,
-                evo_cfg.enable_subgraph_batch_mut,
-            ),
+            sub_graph_batch_sizes={},
+        )
+        ind.sub_graph_batch_sizes = _sample_sub_graph_batch_sizes_for_topology(
+            ind,
+            batch_size,
+            evo_cfg.enable_subgraph_batch_mut,
+            device_type_by_id=device_type_by_id,
+            max_mutated_subgraphs=evo_cfg.subgraph_batch_max_mutated,
         )
         _try_register_individual(
             pop,
@@ -659,6 +805,7 @@ def _fill_batch_variant_population(
     root_init: RootInit,
     fitness_fn: Callable[[Any, int], float],
     attach_hardware_leaves: bool,
+    device_type_by_id: Optional[Dict[int, str]] = None,
 ) -> None:
     """Final fallback: keep the structure/device assignment, resample batch knobs.
 
@@ -681,9 +828,11 @@ def _fill_batch_variant_population(
         batch_size = int(random.choice(init_cfg.batch_size_choices))
         donor.batch_size = batch_size
         donor.sub_graph_batch_sizes = _sample_sub_graph_batch_sizes_for_topology(
-            donor.topology,
+            donor,
             batch_size,
             evo_cfg.enable_subgraph_batch_mut,
+            device_type_by_id=device_type_by_id,
+            max_mutated_subgraphs=evo_cfg.subgraph_batch_max_mutated,
         )
 
         _try_register_individual(
@@ -706,6 +855,7 @@ def _fill_numeric_variant_population(
     root_init: RootInit,
     fitness_fn: Callable[[Any, int], float],
     attach_hardware_leaves: bool,
+    device_type_by_id: Optional[Dict[int, str]] = None,
 ) -> None:
     """Final fallback after batch-only variants: keep validated structures/devices,
     but resample attrs and batch knobs to unlock additional unique seeds.
@@ -724,10 +874,12 @@ def _fill_numeric_variant_population(
         donor.attrs = sample_attrs(donor.topology, donor.device_assign, req_type_num=donor.req_type_num, init_cfg=init_cfg)
         batch_size = int(random.choice(init_cfg.batch_size_choices))
         donor.batch_size = batch_size
-        donor.sub_graph_batch_sizes =_sample_sub_graph_batch_sizes_for_topology(
-            donor.topology,
+        donor.sub_graph_batch_sizes = _sample_sub_graph_batch_sizes_for_topology(
+            donor,
             batch_size,
-            evo_cfg.enable_subgraph_batch_mut
+            evo_cfg.enable_subgraph_batch_mut,
+            device_type_by_id=device_type_by_id,
+            max_mutated_subgraphs=evo_cfg.subgraph_batch_max_mutated,
         )
 
         _try_register_individual(
@@ -780,7 +932,8 @@ def _fill_population_mixed(
     _fill_random_population(
         pop, seen, c_rand,
         init_cfg=init_cfg, evo_cfg=evo_cfg, req_type_num=req_type_num,
-        devices=devices, root_init=root_init, fitness_fn=fitness_fn,
+        devices=devices, device_type_by_id=device_type_by_id,
+        root_init=root_init, fitness_fn=fitness_fn,
         attach_hardware_leaves=attach_hardware_leaves,
     )
 
@@ -816,7 +969,8 @@ def _fill_population_mixed(
             _fill_random_population(
                 pop, seen, rand_quota,
                 init_cfg=init_cfg, evo_cfg=evo_cfg, req_type_num=req_type_num,
-                devices=devices, root_init=root_init, fitness_fn=fitness_fn,
+                devices=devices, device_type_by_id=device_type_by_id,
+                root_init=root_init, fitness_fn=fitness_fn,
                 attach_hardware_leaves=attach_hardware_leaves,
             )
 
@@ -829,6 +983,7 @@ def _fill_population_mixed(
                 init_cfg=init_cfg, evo_cfg=evo_cfg,
                 root_init=root_init, fitness_fn=fitness_fn,
                 attach_hardware_leaves=attach_hardware_leaves,
+                device_type_by_id=device_type_by_id,
             )
             if len(pop) == before:
                 _fill_numeric_variant_population(
@@ -836,6 +991,7 @@ def _fill_population_mixed(
                     init_cfg=init_cfg, evo_cfg=evo_cfg,
                     root_init=root_init, fitness_fn=fitness_fn,
                     attach_hardware_leaves=attach_hardware_leaves,
+                    device_type_by_id=device_type_by_id,
                 )
             if len(pop) == before:
                 stagnation_rounds += 1
@@ -909,9 +1065,11 @@ def initialize_population_with_seeds(
     def try_add(ind: Individual) -> None:
         if not getattr(ind, "sub_graph_batch_sizes", None):
             ind.sub_graph_batch_sizes = _sample_sub_graph_batch_sizes_for_topology(
-                ind.topology,
+                ind,
                 int(getattr(ind, "batch_size", 1)),
                 evo_cfg.enable_subgraph_batch_mut,
+                device_type_by_id=device_type_by_id,
+                max_mutated_subgraphs=evo_cfg.subgraph_batch_max_mutated,
             )
         _try_register_individual(
             pop,
@@ -939,9 +1097,11 @@ def initialize_population_with_seeds(
                     strict_device_partition=strict_device_partition,
                 )
                 ind.sub_graph_batch_sizes = _sample_sub_graph_batch_sizes_for_topology(
-                    ind.topology,
+                    ind,
                     batch_size,
                     evo_cfg.enable_subgraph_batch_mut,
+                    device_type_by_id=device_type_by_id,
+                    max_mutated_subgraphs=evo_cfg.subgraph_batch_max_mutated,
                 )
             except Exception:
                 continue
@@ -978,7 +1138,7 @@ def initialize_population_with_seeds(
     pop.sort(key=lambda x: (10**9 if x.pareto_rank is None else x.pareto_rank, -x.crowding))
     return pop
 
-def _parse_objectives(fitness_result: Any) -> Tuple[float, float]:
+def _parse_objectives(fitness_result: Any) -> Tuple[float, float, List[Any], List[Any]]:
     """Parse evaluator output into (throughput, latency).
 
     In this codebase, pareto-mode simulator outputs are often shaped like:
@@ -1007,28 +1167,31 @@ def _parse_objectives(fitness_result: Any) -> Tuple[float, float]:
                 break
         if lat is None:
             lat = latency_penalty
-        return thr, lat
+        f_dist = fitness_result[2]
+        p_dist = fitness_result[3]
 
-    # dict
-    if isinstance(fitness_result, dict):
-        lower = {str(k).lower(): v for k, v in fitness_result.items()}
+        return thr, lat, f_dist, p_dist
 
-        def pick(*names):
-            for n in names:
-                if n in lower:
-                    return lower[n]
-            return None
-
-        thr = pick("T", "throughput", "tps", "qps", "req_s", "req_per_s", "requests_per_s")
-        lat = pick("L","latency", "p95_latency", "p99_latency", "p90_latency", "tail_latency", "p95", "p99", "lat_ms", "lat_s")
-
-        if thr is None:
-            raise ValueError(f"Cannot parse throughput from dict keys={sorted(lower.keys())}")
-        return float(thr), float(latency_penalty if lat is None else lat)
-
-    # single number: old behavior (maximize this)
-    if isinstance(fitness_result, (int, float)):
-        return float(fitness_result), latency_penalty
+    # # dict
+    # if isinstance(fitness_result, dict):
+    #     lower = {str(k).lower(): v for k, v in fitness_result.items()}
+    #
+    #     def pick(*names):
+    #         for n in names:
+    #             if n in lower:
+    #                 return lower[n]
+    #         return None
+    #
+    #     thr = pick("T", "throughput", "tps", "qps", "req_s", "req_per_s", "requests_per_s")
+    #     lat = pick("L","latency", "p95_latency", "p99_latency", "p90_latency", "tail_latency", "p95", "p99", "lat_ms", "lat_s")
+    #
+    #     if thr is None:
+    #         raise ValueError(f"Cannot parse throughput from dict keys={sorted(lower.keys())}")
+    #     return float(thr), float(latency_penalty if lat is None else lat)
+    #
+    # # single number: old behavior (maximize this)
+    # if isinstance(fitness_result, (int, float)):
+    #     return float(fitness_result), latency_penalty
 
     raise ValueError(f"Unsupported fitness_result type: {type(fitness_result)}")
 
@@ -1259,51 +1422,293 @@ def mapping_refinement(ind: Individual, *, device_type_by_id: Optional[Dict[int,
     )
 
 
-def numeric_mutation(ind: Individual, cfg: EvoConfig, init_cfg: InitConfig) -> Individual:
-    # 目的：不改变拓扑、不改变设备分配，只在同一棵树结构上“微调参数”，让 fitness 能更平滑地改进。
-    # topology：完全不动
-    # device_assign：完全不动（因此 leaf 的 device_group_size 也不变）
-    # attrs：对某个随机节点的 parallel_attr 做扰动（或改 XP tag）
-    topo = ind.topology
-    da = ind.device_assign  # keep device partition for numeric mutation
 
-    new_attrs = Attrs(
-        dp_attr={nid: [row[:] for row in mat] for nid, mat in ind.attrs.dp_attr.items()},
-        pp_attr={nid: vec[:] for nid, vec in ind.attrs.pp_attr.items()},
-        tp_attr={nid: vec[:] for nid, vec in ind.attrs.tp_attr.items()},
-        xp_attr={nid: tags[:] for nid, tags in ind.attrs.xp_attr.items()},
+def _clone_attrs(attrs: Attrs) -> Attrs:
+    return Attrs(
+        dp_attr={nid: [row[:] for row in mat] for nid, mat in attrs.dp_attr.items()},
+        pp_attr={nid: vec[:] for nid, vec in attrs.pp_attr.items()},
+        tp_attr={nid: vec[:] for nid, vec in attrs.tp_attr.items()},
+        xp_attr={nid: tags[:] for nid, tags in attrs.xp_attr.items()},
     )
 
-    candidates = [nid for nid in topo.iter_dfs()]
-    nid = random.choice(candidates)
-    t = topo.gene(nid).ptype
 
-    sigma = cfg.weight_noise_sigma
+def _build_symbolic_node_map(
+    ind: Individual,
+    device_type_by_id: Optional[Dict[int, str]],
+) -> Dict[int, Any]:
+    dtype_map = device_type_by_id or {int(d): str(int(d)) for d in ind.devices}
+    sym_root = individual_to_symbolic(ind, device_type_by_id=dtype_map)
+    return {
+        int(nid): sym_node
+        for nid, sym_node in zip(ind.topology.iter_dfs(), sym_root.walk())
+    }
 
+
+def _pattern_candidate_shape_ok(
+    hint: Dict[str, Any],
+    *,
+    ptype: Parallelism,
+    arity: int,
+    req_type_num: int,
+) -> bool:
+    if ptype == Parallelism.DP:
+        val = hint.get("dp_attr")
+        return (
+            isinstance(val, list)
+            and len(val) == req_type_num
+            and all(isinstance(row, list) and len(row) == arity for row in val)
+        )
+    if ptype == Parallelism.PP:
+        val = hint.get("pp_attr")
+        return isinstance(val, list) and len(val) == arity
+    if ptype == Parallelism.TP:
+        val = hint.get("tp_attr")
+        return isinstance(val, list) and len(val) == arity
+    if ptype == Parallelism.XP:
+        val = hint.get("xp_attr")
+        return isinstance(val, list) and len(val) == 2 and set(val) == {XpTag.ATTENTION, XpTag.LINEAR}
+    return False
+
+
+def _apply_numeric_pattern(
+    new_attrs: Attrs,
+    *,
+    nid: int,
+    ptype: Parallelism,
+    arity: int,
+    req_type_num: int,
+    sym_node: Any,
+    numeric_patterns: Sequence[Any],
+) -> bool:
+    matches = [pat for pat in numeric_patterns if pat.matches(sym_node)]
+    if not matches:
+        return False
+
+    pat = random.choices(
+        matches,
+        weights=[max(1e-9, float(pat.weight)) for pat in matches],
+        k=1,
+    )[0]
+    hint = pat.choose_candidate(rng=random)
+    if not hint or (not _pattern_candidate_shape_ok(hint, ptype=ptype, arity=arity, req_type_num=req_type_num)):
+        return False
+
+    if ptype == Parallelism.DP:
+        new_attrs.dp_attr[nid] = copy.deepcopy(hint["dp_attr"])
+    elif ptype == Parallelism.PP:
+        new_attrs.pp_attr[nid] = copy.deepcopy(hint["pp_attr"])
+    elif ptype == Parallelism.TP:
+        new_attrs.tp_attr[nid] = copy.deepcopy(hint["tp_attr"])
+    elif ptype == Parallelism.XP:
+        new_attrs.xp_attr[nid] = copy.deepcopy(hint["xp_attr"])
+    else:
+        return False
+    return True
+
+
+def _numeric_log_noise(
+    new_attrs: Attrs,
+    *,
+    nid: int,
+    ptype: Parallelism,
+    sigma: float,
+) -> bool:
     def perturb(x: float) -> float:
-        return float(x) * math.exp(random.gauss(0.0, sigma))
+        return max(1e-9, float(x) * math.exp(random.gauss(0.0, sigma)))
 
-    if t == Parallelism.DP:
+    if ptype == Parallelism.DP:
         mat = new_attrs.dp_attr[nid]
-        for r in range(len(mat)):
-            mat[r] = [max(1e-9, perturb(x)) for x in mat[r]]
-    elif t == Parallelism.PP:
+        if not mat:
+            return False
+        row_ids = random.sample(range(len(mat)), k=random.randint(1, len(mat)))
+        changed = False
+        for r in row_ids:
+            cols = random.sample(range(len(mat[r])), k=random.randint(1, len(mat[r])))
+            for c in cols:
+                before = mat[r][c]
+                mat[r][c] = perturb(before)
+                changed = changed or (mat[r][c] != before)
+        return changed
+    if ptype == Parallelism.PP:
         vec = new_attrs.pp_attr[nid]
-        new_attrs.pp_attr[nid] = [max(1e-9, perturb(x)) for x in vec]
-    elif t == Parallelism.TP:
+        idxs = random.sample(range(len(vec)), k=random.randint(1, len(vec)))
+        for i in idxs:
+            vec[i] = perturb(vec[i])
+        return True
+    if ptype == Parallelism.TP:
         vec = new_attrs.tp_attr[nid]
-        new_attrs.tp_attr[nid] = [max(1e-9, perturb(x)) for x in vec]
-    elif t == Parallelism.XP:
-        # FIX: XP tags must be exactly one ATTENTION and one LINEAR.
-        # The only legal mutation is swapping their order.
+        idxs = random.sample(range(len(vec)), k=random.randint(1, len(vec)))
+        for i in idxs:
+            vec[i] = perturb(vec[i])
+        return True
+    if ptype == Parallelism.XP:
         tags = new_attrs.xp_attr[nid]
         new_attrs.xp_attr[nid] = [tags[1], tags[0]]
+        return True
+    return False
+
+
+def _numeric_pair_rebalance(
+    new_attrs: Attrs,
+    *,
+    nid: int,
+    ptype: Parallelism,
+    sigma: float,
+) -> bool:
+    factor = math.exp(random.gauss(0.0, sigma))
+
+    if ptype == Parallelism.DP:
+        mat = new_attrs.dp_attr[nid]
+        row_ids = [r for r, row in enumerate(mat) if len(row) >= 2]
+        if not row_ids:
+            return False
+        r = random.choice(row_ids)
+        i, j = random.sample(range(len(mat[r])), 2)
+        mat[r][i] = max(1e-9, float(mat[r][i]) * factor)
+        mat[r][j] = max(1e-9, float(mat[r][j]) / factor)
+        return True
+
+    if ptype == Parallelism.PP:
+        vec = new_attrs.pp_attr[nid]
+        if len(vec) < 2:
+            return False
+        i, j = random.sample(range(len(vec)), 2)
+        vec[i] = max(1e-9, float(vec[i]) * factor)
+        vec[j] = max(1e-9, float(vec[j]) / factor)
+        return True
+
+    if ptype == Parallelism.TP:
+        vec = new_attrs.tp_attr[nid]
+        if len(vec) < 2:
+            return False
+        i, j = random.sample(range(len(vec)), 2)
+        vec[i] = max(1e-9, float(vec[i]) * factor)
+        vec[j] = max(1e-9, float(vec[j]) / factor)
+        return True
+
+    if ptype == Parallelism.XP:
+        tags = new_attrs.xp_attr[nid]
+        new_attrs.xp_attr[nid] = [tags[1], tags[0]]
+        return True
+
+    return False
+
+
+def _numeric_partial_reset(
+    new_attrs: Attrs,
+    *,
+    nid: int,
+    ptype: Parallelism,
+) -> bool:
+    if ptype == Parallelism.DP:
+        mat = new_attrs.dp_attr[nid]
+        if not mat:
+            return False
+        r = random.randrange(len(mat))
+        cols = random.sample(range(len(mat[r])), k=random.randint(1, len(mat[r])))
+        for c in cols:
+            mat[r][c] = max(1e-9, random.lognormvariate(0.0, 0.8))
+        return True
+
+    if ptype == Parallelism.PP:
+        vec = new_attrs.pp_attr[nid]
+        idxs = random.sample(range(len(vec)), k=random.randint(1, len(vec)))
+        for i in idxs:
+            vec[i] = max(1e-9, random.lognormvariate(0.0, 0.8))
+        return True
+
+    if ptype == Parallelism.TP:
+        vec = new_attrs.tp_attr[nid]
+        idxs = random.sample(range(len(vec)), k=random.randint(1, len(vec)))
+        for i in idxs:
+            vec[i] = max(1e-9, random.lognormvariate(0.0, 0.8))
+        return True
+
+    if ptype == Parallelism.XP:
+        tags = new_attrs.xp_attr[nid]
+        new_attrs.xp_attr[nid] = [tags[1], tags[0]]
+        return True
+
+    return False
+
+
+def numeric_mutation(
+    ind: Individual,
+    cfg: EvoConfig,
+    init_cfg: InitConfig,
+    *,
+    device_type_by_id: Optional[Dict[int, str]] = None,
+) -> Individual:
+    del init_cfg
+    topo = ind.topology
+    new_attrs = _clone_attrs(ind.attrs)
+    sigma = max(1e-9, float(cfg.weight_noise_sigma))
+    max_targets = max(1, int(getattr(cfg, "numeric_mutation_max_targets", 1)))
+    numeric_patterns = default_numeric_patterns()
+    node_to_symbolic = _build_symbolic_node_map(ind, device_type_by_id)
+
+    candidates = [int(nid) for nid in topo.iter_dfs()]
+    if not candidates:
+        return copy.deepcopy(ind)
+
+    target_k = random.randint(1, min(max_targets, len(candidates)))
+    target_nodes = random.sample(candidates, k=target_k)
+
+    changed_any = False
+    for nid in target_nodes:
+        ptype = topo.gene(nid).ptype
+        arity = len(topo.children_of(nid))
+        if arity == 0:
+            arity = len(ind.device_assign.leaf_to_devices.get(nid, []))
+        sym_node = node_to_symbolic.get(int(nid))
+
+        ops: List[str] = []
+        if ptype == Parallelism.XP:
+            ops.extend(["pattern", "swap"])
+        else:
+            ops.extend(["noise", "rebalance", "reset"])
+            if sym_node is not None:
+                matched = [pat for pat in numeric_patterns if pat.matches(sym_node)]
+                if matched:
+                    ops.append("pattern")
+
+        if not ops:
+            continue
+
+        random.shuffle(ops)
+        changed_this = False
+        for op in ops:
+            if op == "pattern" and sym_node is not None:
+                changed_this = _apply_numeric_pattern(
+                    new_attrs,
+                    nid=int(nid),
+                    ptype=ptype,
+                    arity=arity,
+                    req_type_num=ind.req_type_num,
+                    sym_node=sym_node,
+                    numeric_patterns=numeric_patterns,
+                )
+            elif op == "noise":
+                changed_this = _numeric_log_noise(new_attrs, nid=int(nid), ptype=ptype, sigma=sigma)
+            elif op == "rebalance":
+                changed_this = _numeric_pair_rebalance(new_attrs, nid=int(nid), ptype=ptype, sigma=sigma)
+            elif op == "reset":
+                changed_this = _numeric_partial_reset(new_attrs, nid=int(nid), ptype=ptype)
+            elif op == "swap":
+                changed_this = _numeric_log_noise(new_attrs, nid=int(nid), ptype=ptype, sigma=sigma)
+
+            if changed_this:
+                changed_any = True
+                break
+
+    if not changed_any:
+        return copy.deepcopy(ind)
 
     return Individual(
         copy.deepcopy(ind.topology),
         copy.deepcopy(ind.device_assign),
         new_attrs,
-        devices=ind.devices,
+        devices=list(ind.devices),
         req_type_num=ind.req_type_num,
         batch_size=int(getattr(ind, "batch_size", 1)),
         sub_graph_batch_sizes=dict(getattr(ind, "sub_graph_batch_sizes", {})),
@@ -1412,12 +1817,14 @@ def evolve(
             return None
         try:
             res = fitness_fn(root, ind.batch_size)
-            thr, lat = _parse_objectives(res)
+            thr, lat, f_dist, p_dist = _parse_objectives(res)
             if (not math.isfinite(thr)) or (not math.isfinite(lat)):
                 return None
             ind.throughput = thr
             ind.latency = lat
             ind.objectives = (thr, lat)
+            ind.f_dist = f_dist
+            ind.p_dist = p_dist
 
             # dse scatter point
             if dse_out:
@@ -1477,7 +1884,7 @@ def evolve(
                 )
                 mutation_kind = "topology"
             elif r < evo_cfg.p_rewrite_mut + evo_cfg.p_numeric_mut:
-                child = numeric_mutation(parent, evo_cfg, init_cfg)
+                child = numeric_mutation(parent, evo_cfg, init_cfg, device_type_by_id=device_type_by_id)
                 mutation_kind = "numeric"
             else:
                 child = mapping_refinement(parent, device_type_by_id=device_type_by_id)
@@ -1488,7 +1895,7 @@ def evolve(
             child_batch_size = int(random.choice(init_cfg.batch_size_choices))
             child = copy.deepcopy(child)
             child.batch_size = child_batch_size
-            child.sub_graph_batch_sizes=_mutate_sub_graph_batch_sizes(
+            child.sub_graph_batch_sizes = _mutate_sub_graph_batch_sizes(
                 parent,
                 Individual(
                     topology=copy.deepcopy(child.topology),
@@ -1501,6 +1908,8 @@ def evolve(
                 ),
                 mutation_kind,
                 evo_cfg.enable_subgraph_batch_mut,
+                device_type_by_id=device_type_by_id,
+                max_mutated_subgraphs=evo_cfg.subgraph_batch_max_mutated,
             )
 
             child2 = eval_ind(child)

@@ -273,6 +273,9 @@ class Individual:
     latency: Optional[float] = None
     objectives: Optional[Tuple[float, float]] = None
 
+    f_dist: Optional[List[Any]] = None
+    p_dist: Optional[List[Any]] = None
+
     # NSGA-II helpers
     pareto_rank: Optional[int] = None  # 0 is best (non-dominated front)
     crowding: float = 0.0

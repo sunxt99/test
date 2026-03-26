@@ -413,6 +413,7 @@ def build_case_12(request_type_num,
                                  pp_attr=[0, total_layer_num - 1],
                                  tp_attr=[0.0, 1.0],
                                  xp_attr=XpTag.BOTH,
+                                 # parallel_attr=[[1.0, 0.5, 0.0], [0.5, 0.0, 1.0], [0.0, 0.0, 1.0]])
                                  parallel_attr=[[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
                                  # parallel_attr=[[0.3, 0.3, 0.3], [0.3, 0.3, 0.3], [0.3, 0.3, 0.3]])
     node_1 = ModuleParallelismNode(name='p1', parallel_attr=[XpTag.LINEAR, XpTag.ATTENTION])

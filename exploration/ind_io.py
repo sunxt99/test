@@ -141,12 +141,25 @@ def print_individual(ind: Individual, **kwargs: Any) -> None:
 
 def log_individual_json(ind: Individual, path:str) -> None:
     with open(path, "a", encoding="utf-8") as f:
+        f_dist = getattr(ind, 'f_dist', [])
+        p_dist = getattr(ind, 'p_dist', [])
         f.write(json.dumps({"T": ind.throughput,
                             "L": ind.latency,
                             # bs: batch sizes
                             "bs": getattr(ind, 'batch_size', None),
                             # sgbs: sub graph batch sizes
                             "sgbs": getattr(ind, 'sub_graph_batch_sizes', {}),
+                            # finished_dist
+                            "fd": f_dist,
+                            # processed_dist
+                            "pd": p_dist,
+                            # # finished_dist_ratio
+                            # "fdr": [round(f / (r * sys_cfg.lam * sys_cfg.t_end), 4) if r != 0 else 0 for f, r in
+                            #         zip(f_dist, sys_cfg.req_dist)],
+                            # # finished_total_ratio
+                            # "ftr": round(sum(f_dist) / (sys_cfg.lam * sys_cfg.t_end), 3),
+                            # # processed_total_ratio
+                            # "ptr": round(sum(p_dist) / (sys_cfg.lam * sys_cfg.t_end), 3),
                             "info": format_topology(ind, True, True),
                             }, ensure_ascii=False) + "\n")
 

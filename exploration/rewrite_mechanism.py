@@ -74,43 +74,7 @@ class PatternSpec:
     weight: float = 1.0
 
     def matches(self, node: SymbolicNode) -> bool:
-        op = self.match.get("op")
-        if op is not None:
-            want = op if isinstance(op, Parallelism) else Parallelism[str(op)]
-            if node.op != want:
-                return False
-
-        leaf = self.match.get("leaf")
-        if leaf is not None and bool(leaf) != node.is_leaf():
-            return False
-
-        closed = self.match.get("closed")
-        if closed is not None and bool(closed) != bool(node.closed):
-            return False
-
-        child_count = self.match.get("child_count")
-        if child_count is not None and len(node.children) != int(child_count):
-            return False
-
-        min_devices = self.match.get("min_total_devices")
-        if min_devices is not None and node.total_devices() < int(min_devices):
-            return False
-
-        max_devices = self.match.get("max_total_devices")
-        if max_devices is not None and node.total_devices() > int(max_devices):
-            return False
-
-        require_types = self.match.get("require_types")
-        if require_types is not None:
-            types = set(node.device_counts.keys())
-            if not set(str(x) for x in require_types).issubset(types):
-                return False
-
-        exact_counts = self.match.get("device_counts")
-        if exact_counts is not None and _normalize_counts(exact_counts) != _normalize_counts(node.device_counts):
-            return False
-
-        return True
+        return _match_symbolic_node(node, self.match)
 
     def apply(self, node: SymbolicNode) -> Optional[SymbolicNode]:
         if not self.matches(node):
@@ -119,6 +83,32 @@ class PatternSpec:
         out = _build_from_spec(spec)
         out.recompute_counts()
         return out
+
+
+
+@dataclass
+class NumericAttrCandidate:
+    attrs: Dict[str, Any]
+    weight: float = 1.0
+
+
+@dataclass
+class NumericPatternSpec:
+    name: str
+    match: Dict[str, Any]
+    candidates: List[NumericAttrCandidate]
+    weight: float = 1.0
+
+    def matches(self, node: SymbolicNode) -> bool:
+        return _match_symbolic_node(node, self.match)
+
+    def choose_candidate(self, *, rng: Optional[random.Random] = None) -> Optional[Dict[str, Any]]:
+        if not self.candidates:
+            return None
+        local_rng = rng or random.Random()
+        weights = [max(1e-9, float(c.weight)) for c in self.candidates]
+        cand = local_rng.choices(self.candidates, weights=weights, k=1)[0]
+        return copy.deepcopy(cand.attrs)
 
 
 @dataclass
@@ -181,6 +171,63 @@ def _parallelism_from_any(v: Any) -> Parallelism:
     if isinstance(v, Parallelism):
         return v
     return Parallelism[str(v)]
+
+
+def _effective_arity(node: SymbolicNode) -> int:
+    return len(node.children) if node.children else node.total_devices()
+
+
+def _match_symbolic_node(node: SymbolicNode, match: Dict[str, Any]) -> bool:
+    op = match.get("op")
+    if op is not None:
+        want = op if isinstance(op, Parallelism) else Parallelism[str(op)]
+        if node.op != want:
+            return False
+
+    leaf = match.get("leaf")
+    if leaf is not None and bool(leaf) != node.is_leaf():
+        return False
+
+    closed = match.get("closed")
+    if closed is not None and bool(closed) != bool(node.closed):
+        return False
+
+    child_count = match.get("child_count")
+    if child_count is not None and len(node.children) != int(child_count):
+        return False
+
+    arity = match.get("arity")
+    if arity is not None and _effective_arity(node) != int(arity):
+        return False
+
+    min_arity = match.get("min_arity")
+    if min_arity is not None and _effective_arity(node) < int(min_arity):
+        return False
+
+    max_arity = match.get("max_arity")
+    if max_arity is not None and _effective_arity(node) > int(max_arity):
+        return False
+
+    min_devices = match.get("min_total_devices")
+    if min_devices is not None and node.total_devices() < int(min_devices):
+        return False
+
+    max_devices = match.get("max_total_devices")
+    if max_devices is not None and node.total_devices() > int(max_devices):
+        return False
+
+    require_types = match.get("require_types")
+    if require_types is not None:
+        types = set(node.device_counts.keys())
+        if not set(str(x) for x in require_types).issubset(types):
+            return False
+
+    exact_counts = match.get("device_counts")
+    if exact_counts is not None and _normalize_counts(exact_counts) != _normalize_counts(node.device_counts):
+        return False
+
+    return True
+
 
 
 def _build_from_spec(spec: Dict[str, Any]) -> SymbolicNode:
@@ -658,6 +705,92 @@ def default_init_patterns(device_type_to_ids: Dict[str, List[int]]) -> List[Init
     return patterns
 
 
+
+def default_numeric_patterns() -> List[NumericPatternSpec]:
+    return [
+        NumericPatternSpec(
+            name="xp_any_binary",
+            match={"op": Parallelism.XP, "arity": 2},
+            candidates=[
+                NumericAttrCandidate(attrs={"xp_attr": [XpTag.ATTENTION, XpTag.LINEAR]}, weight=1.0),
+                NumericAttrCandidate(attrs={"xp_attr": [XpTag.LINEAR, XpTag.ATTENTION]}, weight=1.0),
+            ],
+            weight=1.0,
+        ),
+        NumericPatternSpec(
+            name="pp_binary_bias",
+            match={"op": Parallelism.PP, "arity": 2},
+            candidates=[
+                NumericAttrCandidate(attrs={"pp_attr": [1.0, 1.0]}, weight=0.8),
+                NumericAttrCandidate(attrs={"pp_attr": [1.5, 0.5]}, weight=1.0),
+                NumericAttrCandidate(attrs={"pp_attr": [0.5, 1.5]}, weight=1.0),
+                NumericAttrCandidate(attrs={"pp_attr": [2.0, 1.0]}, weight=0.7),
+                NumericAttrCandidate(attrs={"pp_attr": [1.0, 2.0]}, weight=0.7),
+            ],
+            weight=0.9,
+        ),
+        NumericPatternSpec(
+            name="pp_ternary_bias",
+            match={"op": Parallelism.PP, "arity": 3},
+            candidates=[
+                NumericAttrCandidate(attrs={"pp_attr": [1.0, 1.0, 1.0]}, weight=0.8),
+                NumericAttrCandidate(attrs={"pp_attr": [1.5, 0.5, 0.5]}, weight=1.0),
+                NumericAttrCandidate(attrs={"pp_attr": [0.5, 1.5, 0.5]}, weight=1.0),
+                NumericAttrCandidate(attrs={"pp_attr": [0.5, 0.5, 1.5]}, weight=1.0),
+                NumericAttrCandidate(attrs={"pp_attr": [1.5, 1.0, 0.5]}, weight=0.7),
+                NumericAttrCandidate(attrs={"pp_attr": [0.5, 1.0, 1.5]}, weight=0.7),
+            ],
+            weight=0.8,
+        ),
+        NumericPatternSpec(
+            name="tp_binary_bias",
+            match={"op": Parallelism.TP, "arity": 2},
+            candidates=[
+                NumericAttrCandidate(attrs={"tp_attr": [1.0, 1.0]}, weight=0.8),
+                NumericAttrCandidate(attrs={"tp_attr": [1.5, 0.5]}, weight=1.0),
+                NumericAttrCandidate(attrs={"tp_attr": [0.5, 1.5]}, weight=1.0),
+                NumericAttrCandidate(attrs={"tp_attr": [2.0, 1.0]}, weight=0.7),
+                NumericAttrCandidate(attrs={"tp_attr": [1.0, 2.0]}, weight=0.7),
+            ],
+            weight=1.0,
+        ),
+        NumericPatternSpec(
+            name="tp_ternary_bias",
+            match={"op": Parallelism.TP, "arity": 3},
+            candidates=[
+                NumericAttrCandidate(attrs={"tp_attr": [1.0, 1.0, 1.0]}, weight=0.8),
+                NumericAttrCandidate(attrs={"tp_attr": [1.5, 0.5, 0.5]}, weight=1.0),
+                NumericAttrCandidate(attrs={"tp_attr": [0.5, 1.5, 0.5]}, weight=1.0),
+                NumericAttrCandidate(attrs={"tp_attr": [0.5, 0.5, 1.5]}, weight=1.0),
+                NumericAttrCandidate(attrs={"tp_attr": [1.5, 1.0, 0.5]}, weight=0.7),
+                NumericAttrCandidate(attrs={"tp_attr": [0.5, 1.0, 1.5]}, weight=0.7),
+            ],
+            weight=0.9,
+        ),
+        NumericPatternSpec(
+            name="dp_binary_bias",
+            match={"op": Parallelism.DP, "arity": 2},
+            candidates=[
+                # [dp_attr] 一共有 request_type_num 个 list，每个 list 是该 req_type 在各个 child 上的切分比例
+                NumericAttrCandidate(attrs={"dp_attr": [[1.0, 0.5], [0.5, 0.0], [0.0, 1.0]]},weight=1.5),
+                NumericAttrCandidate(attrs={"dp_attr": [[0.1, 0.5], [0.5, 1.0], [0.5, 1.0]]}, weight=1.5),
+                NumericAttrCandidate(attrs={"dp_attr": [[1.0, 1.5], [0.5, 0.5], [0.5, 1.5]]}, weight=1.5),
+            ],
+            weight=0.9,
+        ),
+        NumericPatternSpec(
+            name="dp_ternary_bias",
+            match={"op": Parallelism.DP, "arity": 3},
+            candidates=[
+                # [dp_attr] 一共有 request_type_num 个 list，每个 list 是该 req_type 在各个 child 上的切分比例
+                NumericAttrCandidate(attrs={"dp_attr": [[1.0, 0.5, 0.0], [0.5, 0.0, 1.0], [0.0, 0.0, 1.0]]}, weight=1.5),
+            ],
+            weight=0.9,
+        ),
+    ]
+
+
+
 def default_patterns() -> List[PatternSpec]:
     xp_hint = {"xp_attr": [XpTag.LINEAR, XpTag.ATTENTION]}
 
@@ -684,6 +817,7 @@ def default_patterns() -> List[PatternSpec]:
                     {"op": "TP", "device_counts": {"NPU": 3}, "closed": True},
                     {"op": "TP", "device_counts": {"PIM": 3}, "closed": True},
                 ],
+                # [dp_attr] 一共有 request_type_num 个 list，每个 list 是该 req_type 在各个 child 上的切分比例
                 "hint": {"dp_attr": [[1.0, 0.5, 0.0], [0.5, 0.0, 1.0], [0.0, 1.0, 0.5]]},
                 "closed": True,
             },
@@ -705,6 +839,7 @@ def default_patterns() -> List[PatternSpec]:
                     {"op": "TP", "device_counts": {"NPU": 2}, "closed": True},
                     {"op": "TP", "device_counts": {"PIM": 2}, "closed": True},
                 ],
+                # [dp_attr] 一共有 request_type_num 个 list，每个 list 是该 req_type 在各个 child 上的切分比例
                 # "hint": {"dp_attr": [[1.0, 0.5, 0.0], [0.5, 0.0, 1.0], [0.0, 1.0, 0.5]]},
                 "hint": {"dp_attr": [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]},
                 "closed": True,

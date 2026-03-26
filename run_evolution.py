@@ -101,8 +101,11 @@ def main() -> None:
                         rewrite_max_steps=4,
 
                         enable_cache=True,
-                        enable_subgraph_batch_mut=True,
-                        # enable_subgraph_batch_mut=False,
+                        # enable_subgraph_batch_mut=True,
+                        enable_subgraph_batch_mut=False,
+
+                        subgraph_batch_max_mutated=1,
+                        numeric_mutation_max_targets=2,
                         )
 
     # 根据经验进行种群初值

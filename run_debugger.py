@@ -13,22 +13,37 @@ from exploration.decoder import RootInit
 from exploration.fitness_adapter import default_result_to_fitness, make_fitness_fn
 from exploration.ind_io import load_individual_json
 from exploration.rewrite_debugger import (
+    debug_init_patterns,
+    debug_numeric_pattern_candidates,
     debug_rewrite_candidates,
     debug_rewrite_multistep,
     dump_candidate_individuals,
+    dump_init_pattern_individuals,
     dump_multistep_individuals,
+    dump_numeric_candidate_individuals,
+    format_init_pattern_report,
     format_multistep_report,
+    format_numeric_pattern_report,
     format_report,
+    save_init_pattern_report_json,
     save_multistep_report_json,
+    save_numeric_pattern_report_json,
     save_report_json,
 )
 from exploration.rewrite_mechanism import RewriteFamily
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Dedicated rewrite debugger for Individual -> match/rewrite/evaluate.")
+    p = argparse.ArgumentParser(description="Dedicated debugger for rewrite / init_pattern / numeric_pattern.")
 
-    p.add_argument("--individual-json", type=str, required=True, help="Path to the input individual json.")
+    p.add_argument(
+        "--debug-mode",
+        type=str,
+        choices=["single", "multistep", "init_pattern", "numeric_pattern"],
+        default="single",
+        help="single=single-step rewrite, multistep=multi-step rewrite, init_pattern=single-step init pattern, numeric_pattern=single-step numeric pattern.",
+    )
+    p.add_argument("--individual-json", type=str, default=None, help="Path to the input individual json. Required for rewrite/numeric modes.")
     p.add_argument("--model-index", type=int, required=True)
     p.add_argument("--hcase-index", type=int, required=True)
     p.add_argument("--pcase-index", type=int, required=True, help="Only used to initialize simulator scaffolding.")
@@ -46,14 +61,16 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--max-wait-hi-ms", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=42)
 
-    p.add_argument("--debug-mode", type=str, choices=["single", "multistep"], default="single")
-    p.add_argument("--rewrite-max-steps", type=int, default=4, help="Only used by multi-step debug mode.")
+    p.add_argument("--rewrite-max-steps", type=int, default=4, help="Only used by multi-step rewrite debug mode.")
     p.add_argument("--family", type=str, default=None, choices=[x.value for x in RewriteFamily])
-    p.add_argument("--pattern", action="append", default=[], help="Limit to one or more exact pattern names. Only used by single-step debug.")
+    p.add_argument("--pattern", action="append", default=[], help="Limit to one or more exact pattern names.")
+    p.add_argument("--stratum", action="append", default=[], help="Limit init_pattern debug to one or more strata.")
+    p.add_argument("--node-id", action="append", type=int, default=[], help="Limit numeric_pattern debug to one or more node ids.")
+    p.add_argument("--init-batch-size", type=int, default=1, help="Batch size used when materializing init_pattern candidates.")
     p.add_argument("--topk", type=int, default=20)
     p.add_argument("--include-individual-text", action="store_true")
     p.add_argument("--save-dir", type=str, default=None, help="Optional directory to dump candidate individuals.")
-    p.add_argument("--improved-only", action="store_true", help="Only dump candidates/steps that dominate the baseline.")
+    p.add_argument("--improved-only", action="store_true", help="Only dump candidates/steps that dominate the baseline. Ignored for init_pattern mode.")
     p.add_argument("--report-json", type=str, default=None, help="Optional JSON report output path.")
 
     p.add_argument("--p-skeleton-expand", type=float, default=0.25, help="Multi-step family weight.")
@@ -71,6 +88,9 @@ def result_to_fitness(sim_results: List[Any]) -> float:
 def main() -> None:
     args = _parse_args()
     random.seed(args.seed)
+
+    if args.debug_mode in {"single", "multistep", "numeric_pattern"} and not args.individual_json:
+        raise SystemExit("--individual-json is required for single/multistep/numeric_pattern modes.")
 
     sys_cfg = SystemConfig(
         hcase_index=args.hcase_index,
@@ -112,10 +132,40 @@ def main() -> None:
         result_to_fitness=result_to_fitness,
     )
 
+    chosen_family = RewriteFamily(args.family) if args.family else None
+
+    if args.debug_mode == "init_pattern":
+        report = debug_init_patterns(
+            devices=devices,
+            req_type_num=args.req_type_num,
+            fitness_fn=fitness_fn,
+            root_init=root_init,
+            device_type_by_id=device_type_by_id,
+            pattern_names=args.pattern or None,
+            strata=args.stratum or None,
+            batch_size=args.init_batch_size,
+            attach_hardware_leaves=True,
+        )
+
+        print(format_init_pattern_report(report, topk=args.topk, include_individual_text=args.include_individual_text))
+
+        if args.report_json:
+            save_init_pattern_report_json(report, pathlib.Path(args.report_json))
+            print(f"\n[report_json] {args.report_json}")
+
+        if args.save_dir:
+            paths = dump_init_pattern_individuals(
+                report,
+                pathlib.Path(args.save_dir),
+                topk=args.topk,
+            )
+            print(f"[saved_candidates] {len(paths)}")
+            for p in paths:
+                print(f"  - {p}")
+        return
+
     ind = load_individual_json(args.individual_json)
     ind.devices = list(devices)
-
-    chosen_family = RewriteFamily(args.family) if args.family else None
 
     if args.debug_mode == "single":
         report = debug_rewrite_candidates(
@@ -136,6 +186,35 @@ def main() -> None:
 
         if args.save_dir:
             paths = dump_candidate_individuals(
+                report,
+                pathlib.Path(args.save_dir),
+                topk=args.topk,
+                improved_only=args.improved_only,
+            )
+            print(f"[saved_candidates] {len(paths)}")
+            for p in paths:
+                print(f"  - {p}")
+        return
+
+    if args.debug_mode == "numeric_pattern":
+        report = debug_numeric_pattern_candidates(
+            ind,
+            fitness_fn=fitness_fn,
+            root_init=root_init,
+            device_type_by_id=device_type_by_id,
+            pattern_names=args.pattern or None,
+            node_ids=args.node_id or None,
+            attach_hardware_leaves=True,
+        )
+
+        print(format_numeric_pattern_report(report, topk=args.topk, include_individual_text=args.include_individual_text))
+
+        if args.report_json:
+            save_numeric_pattern_report_json(report, pathlib.Path(args.report_json))
+            print(f"\n[report_json] {args.report_json}")
+
+        if args.save_dir:
+            paths = dump_numeric_candidate_individuals(
                 report,
                 pathlib.Path(args.save_dir),
                 topk=args.topk,

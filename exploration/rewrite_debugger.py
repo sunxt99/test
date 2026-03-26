@@ -2,19 +2,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+import copy
 import json
 import pathlib
 import random
 
+from parallelism.pnode import Parallelism, XpTag
 from exploration.decoder import RootInit, decode_to_root
 from exploration.ind_io import format_individual, save_individual_json
 from exploration.individual import Individual
 from exploration.rewrite_mechanism import (
+    InitPatternSpec,
+    NumericAttrCandidate,
+    NumericPatternSpec,
     PatternSpec,
     RewriteFamily,
     SymbolicNode,
     _get_node_by_path,
     _replace_node_by_path,
+    default_init_patterns,
+    default_numeric_patterns,
     default_patterns,
     has_open_nodes,
     individual_to_symbolic,
@@ -898,4 +905,658 @@ def dump_multistep_individuals(
         save_individual_json(report.final_individual, final_path)
         written.append(final_path)
 
+    return written
+
+
+
+def _jsonify_value(v: Any) -> Any:
+    if isinstance(v, dict):
+        return {str(k): _jsonify_value(val) for k, val in v.items()}
+    if isinstance(v, list):
+        return [_jsonify_value(x) for x in v]
+    if isinstance(v, tuple):
+        return [_jsonify_value(x) for x in v]
+    if isinstance(v, Parallelism):
+        return v.name
+    if isinstance(v, XpTag):
+        return v.name
+    return v
+
+
+def _detect_begin_node_ids(topo) -> List[int]:
+    out: List[int] = []
+
+    def dfs(nid: int) -> None:
+        if topo.gene(nid).ptype == Parallelism.DP:
+            for cid in topo.children_of(nid):
+                dfs(cid)
+        else:
+            out.append(int(nid))
+
+    dfs(int(topo.root_id))
+    return out
+
+
+def _default_sub_graph_batch_sizes(ind: Individual, batch_size: int) -> Dict[int, int]:
+    return {int(nid): int(batch_size) for nid in _detect_begin_node_ids(ind.topology)}
+
+
+def _node_effective_arity(ind: Individual, nid: int) -> int:
+    k = len(ind.topology.children_of(int(nid)))
+    if k > 0:
+        return int(k)
+    return len(ind.device_assign.leaf_to_devices.get(int(nid), []))
+
+
+def _build_node_symbolic_maps(
+    ind: Individual,
+    *,
+    device_type_by_id: Optional[Dict[int, str]] = None,
+) -> Tuple[Dict[int, SymbolicNode], Dict[int, Tuple[int, ...]], SymbolicNode]:
+    dtype_by_id = device_type_by_id or {int(d): str(int(d)) for d in ind.devices}
+    sym_root = individual_to_symbolic(ind, device_type_by_id=dtype_by_id)
+    node_ids = list(ind.topology.iter_dfs())
+    sym_nodes = list(sym_root.walk())
+    node_to_symbolic: Dict[int, SymbolicNode] = {}
+    node_to_path: Dict[int, Tuple[int, ...]] = {}
+
+    def dfs(node: SymbolicNode, path: List[int], out: List[Tuple[int, ...]]) -> None:
+        out.append(tuple(path))
+        for idx, child in enumerate(node.children):
+            path.append(idx)
+            dfs(child, path, out)
+            path.pop()
+
+    paths: List[Tuple[int, ...]] = []
+    dfs(sym_root, [], paths)
+
+    for nid, sym_node, path in zip(node_ids, sym_nodes, paths):
+        node_to_symbolic[int(nid)] = sym_node
+        node_to_path[int(nid)] = tuple(path)
+    return node_to_symbolic, node_to_path, sym_root
+
+
+def _get_attr_for_node(ind: Individual, nid: int, ptype: Parallelism) -> Any:
+    nid = int(nid)
+    if ptype == Parallelism.DP:
+        return copy.deepcopy(ind.attrs.dp_attr.get(nid))
+    if ptype == Parallelism.PP:
+        return copy.deepcopy(ind.attrs.pp_attr.get(nid))
+    if ptype == Parallelism.TP:
+        return copy.deepcopy(ind.attrs.tp_attr.get(nid))
+    if ptype == Parallelism.XP:
+        return copy.deepcopy(ind.attrs.xp_attr.get(nid))
+    return None
+
+
+def _set_attr_for_node(ind: Individual, nid: int, ptype: Parallelism, value: Any) -> None:
+    nid = int(nid)
+    if ptype == Parallelism.DP:
+        ind.attrs.dp_attr[nid] = copy.deepcopy(value)
+        return
+    if ptype == Parallelism.PP:
+        ind.attrs.pp_attr[nid] = copy.deepcopy(value)
+        return
+    if ptype == Parallelism.TP:
+        ind.attrs.tp_attr[nid] = copy.deepcopy(value)
+        return
+    if ptype == Parallelism.XP:
+        ind.attrs.xp_attr[nid] = copy.deepcopy(value)
+        return
+    raise ValueError(f'Unsupported ptype: {ptype}')
+
+
+def _pattern_candidate_shape_ok(
+    hint: Dict[str, Any],
+    *,
+    ptype: Parallelism,
+    arity: int,
+    req_type_num: int,
+) -> bool:
+    if ptype == Parallelism.DP:
+        val = hint.get('dp_attr')
+        return (
+            isinstance(val, list)
+            and len(val) == req_type_num
+            and all(isinstance(row, list) and len(row) == arity for row in val)
+        )
+    if ptype == Parallelism.PP:
+        val = hint.get('pp_attr')
+        return isinstance(val, list) and len(val) == arity
+    if ptype == Parallelism.TP:
+        val = hint.get('tp_attr')
+        return isinstance(val, list) and len(val) == arity
+    if ptype == Parallelism.XP:
+        val = hint.get('xp_attr')
+        return isinstance(val, list) and len(val) == 2 and set(val) == {XpTag.ATTENTION, XpTag.LINEAR}
+    return False
+
+
+def _candidate_value_for_ptype(hint: Dict[str, Any], ptype: Parallelism) -> Any:
+    if ptype == Parallelism.DP:
+        return copy.deepcopy(hint['dp_attr'])
+    if ptype == Parallelism.PP:
+        return copy.deepcopy(hint['pp_attr'])
+    if ptype == Parallelism.TP:
+        return copy.deepcopy(hint['tp_attr'])
+    if ptype == Parallelism.XP:
+        return copy.deepcopy(hint['xp_attr'])
+    raise ValueError(f'Unsupported ptype: {ptype}')
+
+
+@dataclass
+class InitPatternCandidateResult:
+    pattern: InitPatternSpec
+    instantiated: bool = False
+    materializable: bool = False
+    legal: bool = False
+    decoded: bool = False
+    throughput: Optional[float] = None
+    latency: Optional[float] = None
+    objectives: Optional[Tuple[float, float]] = None
+    error: Optional[str] = None
+    symbolic_root_pretty: Optional[str] = None
+    candidate_individual: Optional[Individual] = None
+
+
+@dataclass
+class InitPatternDebugReport:
+    candidates: List[InitPatternCandidateResult] = field(default_factory=list)
+    batch_size: int = 1
+
+    def summary_dict(self) -> Dict[str, Any]:
+        return {
+            'mode': 'init_pattern',
+            'batch_size': int(self.batch_size),
+            'candidate_count': len(self.candidates),
+            'decoded_count': sum(1 for c in self.candidates if c.decoded),
+            'candidates': [
+                {
+                    'pattern': c.pattern.name,
+                    'stratum': c.pattern.stratum,
+                    'instantiated': c.instantiated,
+                    'materializable': c.materializable,
+                    'legal': c.legal,
+                    'decoded': c.decoded,
+                    'throughput': c.throughput,
+                    'latency': c.latency,
+                    'objectives': list(c.objectives) if c.objectives is not None else None,
+                    'error': c.error,
+                    'symbolic_root': c.symbolic_root_pretty,
+                }
+                for c in self.candidates
+            ],
+        }
+
+
+@dataclass
+class NumericPatternMatch:
+    pattern: NumericPatternSpec
+    node_id: int
+    ptype: Parallelism
+    arity: int
+    path: Tuple[int, ...]
+    candidate_index: int
+    candidate_attrs: Dict[str, Any]
+    before_node_pretty: str
+    before_root_pretty: str
+    before_attr: Any
+
+    @property
+    def path_str(self) -> str:
+        return 'root' if not self.path else 'root.' + '.'.join(str(x) for x in self.path)
+
+
+@dataclass
+class NumericPatternCandidateResult:
+    match: NumericPatternMatch
+    matched: bool = False
+    applied: bool = False
+    legal: bool = False
+    decoded: bool = False
+    throughput: Optional[float] = None
+    latency: Optional[float] = None
+    objectives: Optional[Tuple[float, float]] = None
+    error: Optional[str] = None
+    dominates_baseline: Optional[bool] = None
+    dominated_by_baseline: Optional[bool] = None
+    equal_objectives: Optional[bool] = None
+    throughput_delta: Optional[float] = None
+    latency_delta: Optional[float] = None
+    after_attr: Any = None
+    candidate_individual: Optional[Individual] = None
+
+
+@dataclass
+class NumericPatternDebugReport:
+    baseline: BaselineEvaluation
+    matches: List[NumericPatternMatch] = field(default_factory=list)
+    candidates: List[NumericPatternCandidateResult] = field(default_factory=list)
+
+    def summary_dict(self) -> Dict[str, Any]:
+        return {
+            'mode': 'numeric_pattern',
+            'baseline': {
+                'decoded': self.baseline.decoded,
+                'throughput': self.baseline.throughput,
+                'latency': self.baseline.latency,
+                'objectives': list(self.baseline.objectives) if self.baseline.objectives is not None else None,
+                'error': self.baseline.error,
+            },
+            'match_count': len(self.matches),
+            'candidate_count': len(self.candidates),
+            'improved_count': sum(1 for c in self.candidates if c.dominates_baseline),
+            'candidates': [
+                {
+                    'pattern': c.match.pattern.name,
+                    'node_id': c.match.node_id,
+                    'ptype': c.match.ptype.name,
+                    'arity': c.match.arity,
+                    'path': list(c.match.path),
+                    'path_str': c.match.path_str,
+                    'candidate_index': c.match.candidate_index,
+                    'candidate_attrs': _jsonify_value(c.match.candidate_attrs),
+                    'matched': c.matched,
+                    'applied': c.applied,
+                    'legal': c.legal,
+                    'decoded': c.decoded,
+                    'throughput': c.throughput,
+                    'latency': c.latency,
+                    'objectives': list(c.objectives) if c.objectives is not None else None,
+                    'throughput_delta': c.throughput_delta,
+                    'latency_delta': c.latency_delta,
+                    'dominates_baseline': c.dominates_baseline,
+                    'dominated_by_baseline': c.dominated_by_baseline,
+                    'equal_objectives': c.equal_objectives,
+                    'before_attr': _jsonify_value(c.match.before_attr),
+                    'after_attr': _jsonify_value(c.after_attr),
+                    'error': c.error,
+                    'before_node': c.match.before_node_pretty,
+                    'before_root': c.match.before_root_pretty,
+                }
+                for c in self.candidates
+            ],
+        }
+
+
+def enumerate_init_patterns(
+    *,
+    devices: Sequence[int],
+    device_type_by_id: Optional[Dict[int, str]] = None,
+    patterns: Optional[Sequence[InitPatternSpec]] = None,
+    pattern_names: Optional[Sequence[str]] = None,
+    strata: Optional[Sequence[str]] = None,
+) -> List[InitPatternSpec]:
+    dtype_by_id = device_type_by_id or {int(d): str(int(d)) for d in devices}
+    device_type_to_ids = _build_device_type_to_ids(devices, dtype_by_id)
+    pats = list(patterns or default_init_patterns(device_type_to_ids))
+    if pattern_names:
+        wanted = set(pattern_names)
+        pats = [p for p in pats if p.name in wanted]
+    if strata:
+        wanted = set(str(x) for x in strata)
+        pats = [p for p in pats if str(p.stratum) in wanted]
+    return pats
+
+
+def debug_init_patterns(
+    *,
+    devices: Sequence[int],
+    req_type_num: int,
+    fitness_fn: Callable[[Any, int], Any],
+    root_init: RootInit,
+    device_type_by_id: Optional[Dict[int, str]] = None,
+    patterns: Optional[Sequence[InitPatternSpec]] = None,
+    pattern_names: Optional[Sequence[str]] = None,
+    strata: Optional[Sequence[str]] = None,
+    batch_size: int = 1,
+    attach_hardware_leaves: bool = True,
+) -> InitPatternDebugReport:
+    report = InitPatternDebugReport(batch_size=int(batch_size))
+    dtype_by_id = device_type_by_id or {int(d): str(int(d)) for d in devices}
+    device_type_to_ids = _build_device_type_to_ids(devices, dtype_by_id)
+    pats = enumerate_init_patterns(
+        devices=devices,
+        device_type_by_id=dtype_by_id,
+        patterns=patterns,
+        pattern_names=pattern_names,
+        strata=strata,
+    )
+
+    for pat in pats:
+        result = InitPatternCandidateResult(pattern=pat)
+        try:
+            sym_root = pat.instantiate()
+            result.instantiated = True
+            result.symbolic_root_pretty = sym_root.pretty()
+            result.materializable = is_materializable(sym_root)
+            if not result.materializable:
+                result.error = 'Init pattern instantiated, but symbolic tree is not materializable.'
+                report.candidates.append(result)
+                continue
+
+            cand = symbolic_to_individual(
+                sym_root,
+                device_type_to_ids=device_type_to_ids,
+                req_type_num=int(req_type_num),
+                batch_size=int(batch_size),
+                devices=list(devices),
+                sub_graph_batch_sizes={},
+            )
+            cand.sub_graph_batch_sizes = _default_sub_graph_batch_sizes(cand, int(batch_size))
+            cand.check_legality()
+            result.legal = True
+            result.candidate_individual = cand
+
+            ev = evaluate_individual(
+                cand,
+                fitness_fn=fitness_fn,
+                root_init=root_init,
+                attach_hardware_leaves=attach_hardware_leaves,
+            )
+            result.decoded = ev.decoded
+            result.throughput = ev.throughput
+            result.latency = ev.latency
+            result.objectives = ev.objectives
+            if not ev.decoded:
+                result.error = ev.error
+        except Exception as e:
+            result.error = str(e)
+        report.candidates.append(result)
+    return report
+
+
+def _sort_init_candidates(report: InitPatternDebugReport) -> List[InitPatternCandidateResult]:
+    def key(c: InitPatternCandidateResult) -> Tuple[int, int, float, float, str]:
+        dec = 1 if c.decoded else 0
+        legal = 1 if c.legal else 0
+        t = float('-inf') if c.throughput is None else float(c.throughput)
+        l = float('inf') if c.latency is None else float(c.latency)
+        return (-dec, -legal, -t, l, c.pattern.name)
+    return sorted(report.candidates, key=key)
+
+
+def format_init_pattern_report(
+    report: InitPatternDebugReport,
+    *,
+    topk: Optional[int] = None,
+    include_individual_text: bool = False,
+) -> str:
+    lines: List[str] = []
+    lines.append('=== Init Pattern Debug Report ===')
+    lines.append(f'batch_size={report.batch_size}')
+    lines.append(f'pattern_count={len(report.candidates)}')
+    lines.append('')
+
+    items = _sort_init_candidates(report)
+    if topk is not None:
+        items = items[: max(0, int(topk))]
+    if not items:
+        lines.append('No init patterns.')
+        return '\n'.join(lines)
+
+    for idx, c in enumerate(items, start=1):
+        lines.append(f'[{idx}] pattern={c.pattern.name} stratum={c.pattern.stratum}')
+        if c.symbolic_root_pretty is not None:
+            lines.append(f'    symbolic_root: {c.symbolic_root_pretty}')
+        lines.append(
+            f'    instantiated={c.instantiated} materializable={c.materializable} '
+            f'legal={c.legal} decoded={c.decoded}'
+        )
+        if c.objectives is not None:
+            lines.append(
+                f'    objectives: throughput={c.objectives[0]:.6f}, latency={c.objectives[1]:.6f}'
+            )
+        if c.error:
+            lines.append(f'    error: {c.error}')
+        if include_individual_text and c.candidate_individual is not None:
+            for ln in format_individual(c.candidate_individual).splitlines():
+                lines.append(f'    {ln}')
+        lines.append('')
+    return '\n'.join(lines).rstrip()
+
+
+def save_init_pattern_report_json(report: InitPatternDebugReport, path: pathlib.Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('w', encoding='utf-8') as f:
+        json.dump(report.summary_dict(), f, ensure_ascii=False, indent=2)
+
+
+def dump_init_pattern_individuals(
+    report: InitPatternDebugReport,
+    out_dir: pathlib.Path,
+    *,
+    topk: Optional[int] = None,
+) -> List[pathlib.Path]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written: List[pathlib.Path] = []
+    items = _sort_init_candidates(report)
+    if topk is not None:
+        items = items[: max(0, int(topk))]
+    for idx, c in enumerate(items, start=1):
+        if c.candidate_individual is None:
+            continue
+        fname = f'init_{idx:03d}_{c.pattern.name}.json'
+        path = out_dir / fname
+        save_individual_json(c.candidate_individual, path)
+        written.append(path)
+    return written
+
+
+def enumerate_numeric_pattern_matches(
+    ind: Individual,
+    *,
+    device_type_by_id: Optional[Dict[int, str]] = None,
+    patterns: Optional[Sequence[NumericPatternSpec]] = None,
+    pattern_names: Optional[Sequence[str]] = None,
+    node_ids: Optional[Sequence[int]] = None,
+) -> List[NumericPatternMatch]:
+    pats = list(patterns or default_numeric_patterns())
+    if pattern_names:
+        wanted = set(pattern_names)
+        pats = [p for p in pats if p.name in wanted]
+    wanted_nodes = None if node_ids is None else {int(x) for x in node_ids}
+
+    node_to_symbolic, node_to_path, sym_root = _build_node_symbolic_maps(ind, device_type_by_id=device_type_by_id)
+    out: List[NumericPatternMatch] = []
+    for nid in ind.topology.iter_dfs():
+        nid = int(nid)
+        if wanted_nodes is not None and nid not in wanted_nodes:
+            continue
+        ptype = ind.topology.gene(nid).ptype
+        arity = _node_effective_arity(ind, nid)
+        sym_node = node_to_symbolic[nid]
+        before_attr = _get_attr_for_node(ind, nid, ptype)
+        for pat in pats:
+            if not pat.matches(sym_node):
+                continue
+            for cand_idx, cand in enumerate(pat.candidates):
+                out.append(
+                    NumericPatternMatch(
+                        pattern=pat,
+                        node_id=nid,
+                        ptype=ptype,
+                        arity=arity,
+                        path=node_to_path[nid],
+                        candidate_index=int(cand_idx),
+                        candidate_attrs=copy.deepcopy(cand.attrs),
+                        before_node_pretty=sym_node.pretty(),
+                        before_root_pretty=sym_root.pretty(),
+                        before_attr=before_attr,
+                    )
+                )
+    return out
+
+
+def apply_numeric_pattern_match(ind: Individual, match: NumericPatternMatch) -> NumericPatternCandidateResult:
+    result = NumericPatternCandidateResult(match=match, matched=True)
+    try:
+        hint = copy.deepcopy(match.candidate_attrs)
+        if not _pattern_candidate_shape_ok(
+            hint,
+            ptype=match.ptype,
+            arity=int(match.arity),
+            req_type_num=int(ind.req_type_num),
+        ):
+            result.error = 'Numeric pattern candidate shape is incompatible with this node.'
+            return result
+
+        cand = copy.deepcopy(ind)
+        value = _candidate_value_for_ptype(hint, match.ptype)
+        _set_attr_for_node(cand, match.node_id, match.ptype, value)
+        cand.check_legality()
+        result.applied = True
+        result.legal = True
+        result.after_attr = _get_attr_for_node(cand, match.node_id, match.ptype)
+        result.candidate_individual = cand
+        return result
+    except Exception as e:
+        result.error = str(e)
+        return result
+
+
+def debug_numeric_pattern_candidates(
+    ind: Individual,
+    *,
+    fitness_fn: Callable[[Any, int], Any],
+    root_init: RootInit,
+    device_type_by_id: Optional[Dict[int, str]] = None,
+    patterns: Optional[Sequence[NumericPatternSpec]] = None,
+    pattern_names: Optional[Sequence[str]] = None,
+    node_ids: Optional[Sequence[int]] = None,
+    attach_hardware_leaves: bool = True,
+) -> NumericPatternDebugReport:
+    baseline = evaluate_individual(
+        ind,
+        fitness_fn=fitness_fn,
+        root_init=root_init,
+        attach_hardware_leaves=attach_hardware_leaves,
+    )
+    matches = enumerate_numeric_pattern_matches(
+        ind,
+        device_type_by_id=device_type_by_id,
+        patterns=patterns,
+        pattern_names=pattern_names,
+        node_ids=node_ids,
+    )
+    report = NumericPatternDebugReport(baseline=baseline, matches=matches)
+
+    for match in matches:
+        candidate = apply_numeric_pattern_match(ind, match)
+        if candidate.legal and candidate.candidate_individual is not None:
+            ev = evaluate_individual(
+                candidate.candidate_individual,
+                fitness_fn=fitness_fn,
+                root_init=root_init,
+                attach_hardware_leaves=attach_hardware_leaves,
+            )
+            candidate.decoded = ev.decoded
+            candidate.throughput = ev.throughput
+            candidate.latency = ev.latency
+            candidate.objectives = ev.objectives
+            if not ev.decoded:
+                candidate.error = ev.error
+            if baseline.objectives is not None and ev.objectives is not None:
+                candidate.throughput_delta = float(ev.objectives[0] - baseline.objectives[0])
+                candidate.latency_delta = float(ev.objectives[1] - baseline.objectives[1])
+                candidate.dominates_baseline = _dominates(ev.objectives, baseline.objectives)
+                candidate.dominated_by_baseline = _dominates(baseline.objectives, ev.objectives)
+                candidate.equal_objectives = (
+                    float(ev.objectives[0]) == float(baseline.objectives[0])
+                    and float(ev.objectives[1]) == float(baseline.objectives[1])
+                )
+        report.candidates.append(candidate)
+    return report
+
+
+def sort_numeric_candidates(report: NumericPatternDebugReport) -> List[NumericPatternCandidateResult]:
+    def key(c: NumericPatternCandidateResult) -> Tuple[int, int, float, float, str, int, int]:
+        improved = 1 if c.dominates_baseline else 0
+        legal = 1 if c.legal else 0
+        t = float('-inf') if c.throughput is None else float(c.throughput)
+        l = float('inf') if c.latency is None else float(c.latency)
+        return (-improved, -legal, -t, l, c.match.pattern.name, int(c.match.node_id), int(c.match.candidate_index))
+    return sorted(report.candidates, key=key)
+
+
+def format_numeric_pattern_report(
+    report: NumericPatternDebugReport,
+    *,
+    topk: Optional[int] = None,
+    include_individual_text: bool = False,
+) -> str:
+    lines: List[str] = []
+    lines.append('=== Numeric Pattern Debug Report ===')
+    if report.baseline.objectives is not None:
+        lines.append(
+            f'Baseline: throughput={report.baseline.objectives[0]:.6f}, '
+            f'latency={report.baseline.objectives[1]:.6f}'
+        )
+    else:
+        lines.append(f'Baseline: decode/eval failed: {report.baseline.error}')
+    lines.append(f'Matched candidates: {len(report.matches)}')
+    lines.append('')
+
+    items = sort_numeric_candidates(report)
+    if topk is not None:
+        items = items[: max(0, int(topk))]
+    if not items:
+        lines.append('No numeric pattern candidates.')
+        return '\n'.join(lines)
+
+    for idx, c in enumerate(items, start=1):
+        m = c.match
+        lines.append(
+            f'[{idx}] pattern={m.pattern.name} node_id={m.node_id} ptype={m.ptype.name} '
+            f'arity={m.arity} path={m.path_str} candidate_index={m.candidate_index}'
+        )
+        lines.append(f'    before_attr: {_jsonify_value(m.before_attr)}')
+        lines.append(f'    candidate  : {_jsonify_value(m.candidate_attrs)}')
+        lines.append(f'    after_attr : {_jsonify_value(c.after_attr)}')
+        lines.append(f'    applied={c.applied} legal={c.legal} decoded={c.decoded}')
+        if c.objectives is not None:
+            dt = 'None' if c.throughput_delta is None else f'{c.throughput_delta:+.6f}'
+            dl = 'None' if c.latency_delta is None else f'{c.latency_delta:+.6f}'
+            lines.append(
+                '    objectives: '
+                f'throughput={c.objectives[0]:.6f}, latency={c.objectives[1]:.6f}, '
+                f'delta_T={dt}, delta_L={dl}, '
+                f'dominates_baseline={c.dominates_baseline}, dominated_by_baseline={c.dominated_by_baseline}'
+            )
+        if c.error:
+            lines.append(f'    error: {c.error}')
+        if include_individual_text and c.candidate_individual is not None:
+            for ln in format_individual(c.candidate_individual).splitlines():
+                lines.append(f'    {ln}')
+        lines.append('')
+    return '\n'.join(lines).rstrip()
+
+
+def save_numeric_pattern_report_json(report: NumericPatternDebugReport, path: pathlib.Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('w', encoding='utf-8') as f:
+        json.dump(report.summary_dict(), f, ensure_ascii=False, indent=2)
+
+
+def dump_numeric_candidate_individuals(
+    report: NumericPatternDebugReport,
+    out_dir: pathlib.Path,
+    *,
+    topk: Optional[int] = None,
+    improved_only: bool = False,
+) -> List[pathlib.Path]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written: List[pathlib.Path] = []
+    items = sort_numeric_candidates(report)
+    if improved_only:
+        items = [c for c in items if c.dominates_baseline]
+    if topk is not None:
+        items = items[: max(0, int(topk))]
+    for idx, c in enumerate(items, start=1):
+        if c.candidate_individual is None:
+            continue
+        fname = f'numeric_{idx:03d}_{c.match.pattern.name}_n{int(c.match.node_id)}_c{int(c.match.candidate_index)}.json'
+        path = out_dir / fname
+        save_individual_json(c.candidate_individual, path)
+        written.append(path)
     return written
