@@ -93,10 +93,14 @@ def main() -> None:
                           p_random_init = 0.2,
 
                           # batch_size_choices=(256,))  # model0
-                          batch_size_choices=(1,2,4,8,16,32,64,128,160,196,256,320,352,384,416,448,480,512))  # model0
-                          # batch_size_choices=(1,2,4,8,16,32,48,64,96,128,160,196)) # model1
-                          # batch_size_choices=(1,2,4,8,16,32,48,64,96,128,160,196)) # model2
-                          # batch_size_choices=(1,2,4,8,16,32,48,64,96,112,128)) # model3
+                          batch_size_choices=(1,2,4,8,16,32,64,128,160,196,256,320,352,384,416,448,480,512),  # model0
+                          # batch_size_choices=(1,2,4,8,16,32,48,64,96,128,160,196), # model1
+                          # batch_size_choices=(1,2,4,8,16,32,48,64,96,128,160,196), # model2
+                          # batch_size_choices=(1,2,4,8,16,32,48,64,96,112,128), # model3
+
+                          # disabled_parallelisms=(Parallelism.DP, Parallelism.XP),
+                          disabled_parallelisms=(),
+                          )
 
 
     evo_cfg = EvoConfig(generations=3,

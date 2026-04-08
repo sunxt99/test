@@ -25,6 +25,14 @@ from exploration.individual import (
 from exploration.decoder import RootInit, try_decode_to_root
 from exploration.feasibility import FeasibilityConfig, compute_feasible_batch_caps
 from exploration.seed_from_pcase import individual_from_pcase_root
+from exploration.parallelism_filter import (
+    allowed_parallelism_types,
+    filter_init_patterns_by_parallelism,
+    filter_rewrite_patterns_by_parallelism,
+    individual_contains_disabled_parallelisms,
+    normalize_disabled_parallelisms,
+    symbolic_contains_disabled_parallelisms,
+)
 from exploration.ind_io import (
     log_individual_json,
     print_individual,
@@ -64,6 +72,7 @@ class InitConfig:
 
     # Per-individual batch size search space (resampled on every mutation)
     batch_size_choices: Sequence[int] = (1, 2, 4, 8, 16, 32, 64, 128, 256)
+    disabled_parallelisms: Sequence[Any] = ()
 
 @dataclass
 class EvoConfig:
@@ -148,18 +157,33 @@ def canonical_key(ind: Individual, *, round_digits: int = 3) -> str:
     return hashlib.sha1(s).hexdigest()
 
 
-def _allowed_types(seen_pp: bool, seen_tp: bool) -> List[Parallelism]:
-    allowed = [Parallelism.XP, Parallelism.TP, Parallelism.PP, Parallelism.DP]
-    if seen_pp or seen_tp:
-        allowed = [t for t in allowed if t != Parallelism.DP]
-    if seen_tp:
-        allowed = [t for t in allowed if t != Parallelism.PP]
-    return allowed
+def _allowed_types(
+    seen_pp: bool,
+    seen_tp: bool,
+    disabled_parallelisms: Sequence[Any] = (),
+) -> List[Parallelism]:
+    return allowed_parallelism_types(seen_pp, seen_tp, disabled_parallelisms)
+
+
+def _get_disabled_parallelisms(init_cfg: InitConfig) -> List[Parallelism]:
+    return list(normalize_disabled_parallelisms(getattr(init_cfg, "disabled_parallelisms", ())))
+
+
+def _individual_allowed_by_parallelism_filter(ind: Individual, init_cfg: InitConfig) -> bool:
+    return not individual_contains_disabled_parallelisms(ind, _get_disabled_parallelisms(init_cfg))
+
+
+def _symbolic_allowed_by_parallelism_filter(sym_root: Any, init_cfg: InitConfig) -> bool:
+    return not symbolic_contains_disabled_parallelisms(sym_root, _get_disabled_parallelisms(init_cfg))
 
 
 def random_topology(cfg: InitConfig) -> Topology:
+    disabled_parallelisms = normalize_disabled_parallelisms(getattr(cfg, "disabled_parallelisms", ()))
     nodes: List[TopologyNodeGene] = []
-    root_type = random.choice(_allowed_types(False, False))
+    root_allowed = _allowed_types(False, False, disabled_parallelisms)
+    if not root_allowed:
+        raise ValueError("No root parallelism types remain after applying disabled_parallelisms.")
+    root_type = random.choice(root_allowed)
     nodes.append(TopologyNodeGene(node_id=0, parent_id=-1, ptype=root_type, child_slot=0))
     next_id = 1
 
@@ -178,7 +202,10 @@ def random_topology(cfg: InitConfig) -> Topology:
 
         k = 2 if t == Parallelism.XP else random.randint(2, cfg.max_children)
         for slot in range(k):
-            ctype = random.choice(_allowed_types(npp, ntp))
+            child_allowed = _allowed_types(npp, ntp, disabled_parallelisms)
+            if not child_allowed:
+                continue
+            ctype = random.choice(child_allowed)
             nodes.append(TopologyNodeGene(node_id=next_id, parent_id=nid, ptype=ctype, child_slot=slot))
             id2ptype[next_id] = ctype
             q.append((next_id, depth + 1, npp, ntp))
@@ -620,11 +647,15 @@ def _try_register_individual(
     seen: set[str],
     ind: Individual,
     *,
+    init_cfg: InitConfig,
     root_init: RootInit,
     fitness_fn: Callable[[Any, int], float],
     attach_hardware_leaves: bool,
     feasibility_cfg: Optional[FeasibilityConfig] = None,
 ) -> bool:
+
+    if not _individual_allowed_by_parallelism_filter(ind, init_cfg):
+        return False
 
     if not _repair_sub_graph_batch_sizes_by_feasibility(ind, feasibility_cfg):
         return False
@@ -659,6 +690,9 @@ def _make_individual_from_symbolic_seed(
     device_type_by_id: Optional[Dict[int, str]] = None,
     feasibility_cfg: Optional[FeasibilityConfig] = None,
 ) -> Optional[Individual]:
+    if not _symbolic_allowed_by_parallelism_filter(sym_root, init_cfg):
+        return None
+
     batch_size = int(random.choice(init_cfg.batch_size_choices))
     try:
         ind = symbolic_to_individual(
@@ -703,7 +737,10 @@ def _fill_pattern_seeded_population(
 
     start_len = len(pop)
     device_type_to_ids = _build_device_type_to_ids(devices, device_type_by_id)
-    patterns = default_init_patterns(device_type_to_ids)
+    patterns = filter_init_patterns_by_parallelism(
+        default_init_patterns(device_type_to_ids),
+        _get_disabled_parallelisms(init_cfg),
+    )
     if not patterns:
         return
 
@@ -733,6 +770,7 @@ def _fill_pattern_seeded_population(
             pop,
             seen,
             ind,
+            init_cfg=init_cfg,
             root_init=root_init,
             fitness_fn=fitness_fn,
             attach_hardware_leaves=attach_hardware_leaves,
@@ -760,7 +798,10 @@ def _fill_stratified_population(
 
     start_len = len(pop)
     device_type_to_ids = _build_device_type_to_ids(devices, device_type_by_id)
-    patterns = default_init_patterns(device_type_to_ids)
+    patterns = filter_init_patterns_by_parallelism(
+        default_init_patterns(device_type_to_ids),
+        _get_disabled_parallelisms(init_cfg),
+    )
     if not patterns:
         return
 
@@ -798,6 +839,7 @@ def _fill_stratified_population(
             pop,
             seen,
             ind,
+            init_cfg=init_cfg,
             root_init=root_init,
             fitness_fn=fitness_fn,
             attach_hardware_leaves=attach_hardware_leaves,
@@ -864,6 +906,7 @@ def _fill_random_population(
             pop,
             seen,
             ind,
+            init_cfg=init_cfg,
             root_init=root_init,
             fitness_fn=fitness_fn,
             attach_hardware_leaves=attach_hardware_leaves,
@@ -917,6 +960,7 @@ def _fill_batch_variant_population(
             pop,
             seen,
             donor,
+            init_cfg=init_cfg,
             root_init=root_init,
             fitness_fn=fitness_fn,
             attach_hardware_leaves=attach_hardware_leaves,
@@ -967,6 +1011,7 @@ def _fill_numeric_variant_population(
             pop,
             seen,
             donor,
+            init_cfg=init_cfg,
             root_init=root_init,
             fitness_fn=fitness_fn,
             attach_hardware_leaves=attach_hardware_leaves,
@@ -1170,6 +1215,7 @@ def initialize_population_with_seeds(
             pop,
             seen,
             ind,
+            init_cfg=init_cfg,
             root_init=root_init,
             fitness_fn=fitness_fn,
             attach_hardware_leaves=attach_hardware_leaves,
@@ -1435,12 +1481,18 @@ def rewrite_mutation(
     Only materialize back to Individual when the symbolic tree becomes fully
     materializable within the step budget; otherwise fall back to the parent.
     """
-    del init_cfg
+    disabled_parallelisms = _get_disabled_parallelisms(init_cfg)
     sym_root = individual_to_symbolic(
         ind,
         device_type_by_id=device_type_by_id or {int(d): str(int(d)) for d in devices},
     )
-    engine = RewriteEngine(default_patterns(), rng=random)
+    if symbolic_contains_disabled_parallelisms(sym_root, disabled_parallelisms):
+        return copy.deepcopy(ind)
+
+    patterns = filter_rewrite_patterns_by_parallelism(default_patterns(), disabled_parallelisms)
+    if not patterns:
+        return copy.deepcopy(ind)
+    engine = RewriteEngine(patterns, rng=random)
 
     max_steps = max(1, int(getattr(cfg, "rewrite_max_steps", 1)))
     changed_any = False
@@ -1466,8 +1518,11 @@ def rewrite_mutation(
     if (not changed_any) or (not is_materializable(sym_root)):
         return copy.deepcopy(ind)
 
+    if symbolic_contains_disabled_parallelisms(sym_root, disabled_parallelisms):
+        return copy.deepcopy(ind)
+
     try:
-        return symbolic_to_individual(
+        child = symbolic_to_individual(
             sym_root,
             device_type_to_ids=_build_device_type_to_ids(devices, device_type_by_id),
             req_type_num=ind.req_type_num,
@@ -1475,6 +1530,9 @@ def rewrite_mutation(
             devices=list(devices),
             sub_graph_batch_sizes={},
         )
+        if not _individual_allowed_by_parallelism_filter(child, init_cfg):
+            return copy.deepcopy(ind)
+        return child
     except Exception:
         return copy.deepcopy(ind)
 
@@ -1903,6 +1961,8 @@ def evolve(
             # 3. attrs shape 匹配“有效 arity”（含 leaf=设备组大小）
             ind.check_legality()
         except Exception:
+            return None
+        if not _individual_allowed_by_parallelism_filter(ind, init_cfg):
             return None
         if not _repair_sub_graph_batch_sizes_by_feasibility(ind, feasibility_cfg):
             return None
