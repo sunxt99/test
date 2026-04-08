@@ -149,6 +149,8 @@ def log_individual_json(ind: Individual, path:str) -> None:
                             "bs": getattr(ind, 'batch_size', None),
                             # sgbs: sub graph batch sizes
                             "sgbs": getattr(ind, 'sub_graph_batch_sizes', {}),
+                            # memory feasibility log
+                            "mem": getattr(ind, 'memory_feasibility_log', None),
                             # finished_dist
                             "fd": f_dist,
                             # processed_dist
@@ -176,6 +178,7 @@ def individual_to_dict(ind: Individual) -> Dict[str, Any]:
         "req_type_num": ind.req_type_num,
         "batch_size": getattr(ind, "batch_size", 1),
         "sub_graph_batch_sizes": {str(k): int(v) for k, v in getattr(ind, "sub_graph_batch_sizes", {}).items()},
+        "memory_feasibility_log": getattr(ind, "memory_feasibility_log", None),
         "throughput": ind.throughput,
         "latency": ind.latency,
         "pareto_rank": ind.pareto_rank,
@@ -237,6 +240,8 @@ def individual_from_dict(data: Dict[str, Any]) -> Individual:
     ind.uid = data.get("uid")
     ind.throughput = data.get("throughput")
     ind.latency = data.get("latency")
+    if "memory_feasibility_log" in data:
+        setattr(ind, "memory_feasibility_log", data.get("memory_feasibility_log"))
     ind.check_legality()
     return ind
 

@@ -23,6 +23,7 @@ from exploration.individual import (
 )
 
 from exploration.decoder import RootInit, try_decode_to_root
+from exploration.feasibility import FeasibilityConfig, compute_feasible_batch_caps
 from exploration.seed_from_pcase import individual_from_pcase_root
 from exploration.ind_io import (
     log_individual_json,
@@ -279,6 +280,44 @@ def _eligible_pim_begin_ids(
     ]
 
 
+def _compute_feasible_batch_caps(
+    ind: Individual,
+    upper: int,
+    feasibility_cfg: Optional[FeasibilityConfig],
+) -> Dict[int, int]:
+    upper = max(1, int(upper))
+    begin_ids = _detect_begin_node_ids(ind.topology)
+    if feasibility_cfg is None:
+        return {int(nid): int(upper) for nid in begin_ids}
+
+    caps = compute_feasible_batch_caps(ind, feasibility_cfg, default_upper=upper)
+    return {int(nid): max(0, int(caps.get(int(nid), upper))) for nid in begin_ids}
+
+
+def _repair_sub_graph_batch_sizes_by_feasibility(
+    ind: Individual,
+    feasibility_cfg: Optional[FeasibilityConfig],
+) -> bool:
+    upper = max(1, int(getattr(ind, "batch_size", 1)))
+    begin_ids = _detect_begin_node_ids(ind.topology)
+    caps = _compute_feasible_batch_caps(ind, upper, feasibility_cfg)
+    cur_map = {int(k): int(v) for k, v in getattr(ind, "sub_graph_batch_sizes", {}).items()}
+
+    feasible = True
+    repaired: Dict[int, int] = {}
+    for nid in begin_ids:
+        nid = int(nid)
+        cap = max(0, int(caps.get(nid, upper)))
+        if cap < 1:
+            feasible = False
+            cap = 1
+        cur = int(cur_map.get(nid, upper))
+        repaired[nid] = max(1, min(upper, cap, cur))
+
+    ind.sub_graph_batch_sizes = repaired
+    return feasible
+
+
 def _sample_sub_graph_batch_sizes_for_topology(
     ind: Individual,
     max_batch_lo: int,
@@ -286,6 +325,7 @@ def _sample_sub_graph_batch_sizes_for_topology(
     *,
     device_type_by_id: Optional[Dict[int, str]] = None,
     max_mutated_subgraphs: int = 1,
+    feasibility_cfg: Optional[FeasibilityConfig] = None,
 ) -> Dict[int, int]:
     """
     Resample sub-graph batch sizes with PIM-aware constraints.
@@ -297,7 +337,8 @@ def _sample_sub_graph_batch_sizes_for_topology(
     """
     begin_ids = _detect_begin_node_ids(ind.topology)
     upper = max(1, int(max_batch_lo))
-    child_map = {int(nid): int(upper) for nid in begin_ids}
+    feasible_caps = _compute_feasible_batch_caps(ind, upper, feasibility_cfg)
+    child_map = {int(nid): max(1, int(feasible_caps.get(int(nid), upper))) for nid in begin_ids}
 
     if (not enable_subgraph_batch_mut) or upper <= 1:
         return child_map
@@ -315,7 +356,12 @@ def _sample_sub_graph_batch_sizes_for_topology(
 
     touch_k = random.randint(1, min(max_touch, len(pim_begin_ids)))
     for nid in random.sample(pim_begin_ids, k=touch_k):
-        child_map[int(nid)] = int(random.randint(1, upper - 1 if upper > 1 else 1))
+        nid = int(nid)
+        local_upper = max(1, int(feasible_caps.get(nid, upper)))
+        if local_upper <= 1:
+            child_map[nid] = 1
+        else:
+            child_map[nid] = int(random.randint(1, local_upper - 1 if local_upper > 1 else 1))
     return child_map
 
 
@@ -327,21 +373,23 @@ def _tweak_sub_graph_batch_sizes(
     *,
     device_type_by_id: Optional[Dict[int, str]] = None,
     max_mutated_subgraphs: int = 1,
+    feasibility_cfg: Optional[FeasibilityConfig] = None,
 ) -> Dict[int, int]:
     """Micro-tune sub-graph batch sizes only around the parent's assignments."""
     upper = max(1, int(max_batch_lo))
     if not child_begin_ids:
         return {}
 
+    feasible_caps = _compute_feasible_batch_caps(child, upper, feasibility_cfg)
     pim_begin_ids = set(_eligible_pim_begin_ids(child, child_begin_ids, device_type_by_id))
     child_map: Dict[int, int] = {}
     for nid in child_begin_ids:
         nid = int(nid)
         if nid in pim_begin_ids:
             base = int(parent_map.get(nid, upper))
-            child_map[nid] = max(1, min(upper, base))
+            child_map[nid] = max(1, min(int(feasible_caps.get(nid, upper)), upper, base))
         else:
-            child_map[nid] = int(upper)
+            child_map[nid] = max(1, int(feasible_caps.get(nid, upper)))
 
     if upper <= 1:
         return child_map
@@ -363,9 +411,9 @@ def _tweak_sub_graph_batch_sizes(
         if op == "decrease":
             child_map[nid] = int(random.randint(1, base))
         elif op == "increase":
-            child_map[nid] = int(random.randint(base, upper))
+            child_map[nid] = int(random.randint(base, max(base, int(feasible_caps.get(nid, upper)))))
         else:
-            child_map[nid] = int(random.randint(1, upper))
+            child_map[nid] = int(random.randint(1, max(1, int(feasible_caps.get(nid, upper)))))
         touched = touched or (child_map[nid] != base)
 
     if (not touched) and mutable_ids:
@@ -386,13 +434,15 @@ def _mutate_sub_graph_batch_sizes(
     *,
     device_type_by_id: Optional[Dict[int, str]] = None,
     max_mutated_subgraphs: int = 1,
+    feasibility_cfg: Optional[FeasibilityConfig] = None,
 ) -> Dict[int, int]:
     child_begin_ids = _detect_begin_node_ids(child.topology)
     upper = max(1, int(getattr(child, "batch_size", 1)))
 
-    # 不做 subgraph 级搜索时，所有 begin-node 直接绑定到 global batch size
+    # 不做 subgraph 级搜索时，仍需要 obey 内存可行性上限。
     if not enable_subgraph_batch_mut:
-        return {int(nid): int(upper) for nid in child_begin_ids}
+        caps = _compute_feasible_batch_caps(child, upper, feasibility_cfg)
+        return {int(nid): max(1, int(caps.get(int(nid), upper))) for nid in child_begin_ids}
 
     if mutation_kind == "topology":
         return _sample_sub_graph_batch_sizes_for_topology(
@@ -401,6 +451,7 @@ def _mutate_sub_graph_batch_sizes(
             enable_subgraph_batch_mut,
             device_type_by_id=device_type_by_id,
             max_mutated_subgraphs=max_mutated_subgraphs,
+            feasibility_cfg=feasibility_cfg,
         )
 
     parent_map = {int(k): int(v) for k, v in getattr(parent, "sub_graph_batch_sizes", {}).items()}
@@ -411,18 +462,21 @@ def _mutate_sub_graph_batch_sizes(
             enable_subgraph_batch_mut,
             device_type_by_id=device_type_by_id,
             max_mutated_subgraphs=max_mutated_subgraphs,
+            feasibility_cfg=feasibility_cfg,
         )
 
     r = random.random()
     if r < 0.60:
         out: Dict[int, int] = {}
         pim_begin_ids = set(_eligible_pim_begin_ids(child, child_begin_ids, device_type_by_id))
+        feasible_caps = _compute_feasible_batch_caps(child, upper, feasibility_cfg)
         for nid in child_begin_ids:
             nid = int(nid)
+            local_upper = max(1, int(feasible_caps.get(nid, upper)))
             if nid in pim_begin_ids:
-                out[nid] = max(1, min(upper, int(parent_map.get(nid, upper))))
+                out[nid] = max(1, min(local_upper, int(parent_map.get(nid, local_upper))))
             else:
-                out[nid] = int(upper)
+                out[nid] = local_upper
         return out
     if r < 0.80:
         return _tweak_sub_graph_batch_sizes(
@@ -432,6 +486,7 @@ def _mutate_sub_graph_batch_sizes(
             upper,
             device_type_by_id=device_type_by_id,
             max_mutated_subgraphs=max_mutated_subgraphs,
+            feasibility_cfg=feasibility_cfg,
         )
     return _sample_sub_graph_batch_sizes_for_topology(
         child,
@@ -439,6 +494,7 @@ def _mutate_sub_graph_batch_sizes(
         enable_subgraph_batch_mut,
         device_type_by_id=device_type_by_id,
         max_mutated_subgraphs=max_mutated_subgraphs,
+        feasibility_cfg=feasibility_cfg,
     )
 
 
@@ -529,10 +585,14 @@ def _evaluate_individual(
     root_init: RootInit,
     fitness_fn: Callable[[Any, int], float],
     attach_hardware_leaves: bool,
+    feasibility_cfg: Optional[FeasibilityConfig] = None,
 ) -> bool:
     try:
         ind.check_legality()
     except Exception:
+        return False
+
+    if not _repair_sub_graph_batch_sizes_by_feasibility(ind, feasibility_cfg):
         return False
 
     local_root_init = copy.deepcopy(root_init)
@@ -563,7 +623,11 @@ def _try_register_individual(
     root_init: RootInit,
     fitness_fn: Callable[[Any, int], float],
     attach_hardware_leaves: bool,
+    feasibility_cfg: Optional[FeasibilityConfig] = None,
 ) -> bool:
+
+    if not _repair_sub_graph_batch_sizes_by_feasibility(ind, feasibility_cfg):
+        return False
 
     uid = canonical_key(ind)
     ind.uid = uid
@@ -575,6 +639,7 @@ def _try_register_individual(
         root_init=root_init,
         fitness_fn=fitness_fn,
         attach_hardware_leaves=attach_hardware_leaves,
+        feasibility_cfg=feasibility_cfg,
     ):
         return False
 
@@ -592,6 +657,7 @@ def _make_individual_from_symbolic_seed(
     devices: Sequence[int],
     device_type_to_ids: Dict[str, List[int]],
     device_type_by_id: Optional[Dict[int, str]] = None,
+    feasibility_cfg: Optional[FeasibilityConfig] = None,
 ) -> Optional[Individual]:
     batch_size = int(random.choice(init_cfg.batch_size_choices))
     try:
@@ -612,6 +678,7 @@ def _make_individual_from_symbolic_seed(
         evo_cfg.enable_subgraph_batch_mut,
         device_type_by_id=device_type_by_id,
         max_mutated_subgraphs=evo_cfg.subgraph_batch_max_mutated,
+        feasibility_cfg=feasibility_cfg,
     )
     return ind
 
@@ -629,6 +696,7 @@ def _fill_pattern_seeded_population(
     root_init: RootInit,
     fitness_fn: Callable[[Any, int], float],
     attach_hardware_leaves: bool,
+    feasibility_cfg: Optional[FeasibilityConfig] = None,
 ) -> None:
     if target_count <= 0:
         return
@@ -654,6 +722,7 @@ def _fill_pattern_seeded_population(
             devices=devices,
             device_type_to_ids=device_type_to_ids,
             device_type_by_id=device_type_by_id,
+            feasibility_cfg=feasibility_cfg,
         )
         if ind is None:
             continue
@@ -667,6 +736,7 @@ def _fill_pattern_seeded_population(
             root_init=root_init,
             fitness_fn=fitness_fn,
             attach_hardware_leaves=attach_hardware_leaves,
+            feasibility_cfg=feasibility_cfg,
         )
 
 
@@ -683,6 +753,7 @@ def _fill_stratified_population(
     root_init: RootInit,
     fitness_fn: Callable[[Any, int], float],
     attach_hardware_leaves: bool,
+    feasibility_cfg: Optional[FeasibilityConfig] = None,
 ) -> None:
     if target_count <= 0:
         return
@@ -719,6 +790,7 @@ def _fill_stratified_population(
             devices=devices,
             device_type_to_ids=device_type_to_ids,
             device_type_by_id=device_type_by_id,
+            feasibility_cfg=feasibility_cfg,
         )
         if ind is None:
             continue
@@ -729,6 +801,7 @@ def _fill_stratified_population(
             root_init=root_init,
             fitness_fn=fitness_fn,
             attach_hardware_leaves=attach_hardware_leaves,
+            feasibility_cfg=feasibility_cfg,
         )
 
 
@@ -745,6 +818,7 @@ def _fill_random_population(
     root_init: RootInit,
     fitness_fn: Callable[[Any, int], float],
     attach_hardware_leaves: bool,
+    feasibility_cfg: Optional[FeasibilityConfig] = None,
 ) -> None:
     if target_count <= 0:
         return
@@ -784,6 +858,7 @@ def _fill_random_population(
             evo_cfg.enable_subgraph_batch_mut,
             device_type_by_id=device_type_by_id,
             max_mutated_subgraphs=evo_cfg.subgraph_batch_max_mutated,
+            feasibility_cfg=feasibility_cfg,
         )
         _try_register_individual(
             pop,
@@ -792,6 +867,7 @@ def _fill_random_population(
             root_init=root_init,
             fitness_fn=fitness_fn,
             attach_hardware_leaves=attach_hardware_leaves,
+            feasibility_cfg=feasibility_cfg,
         )
 
 
@@ -806,6 +882,7 @@ def _fill_batch_variant_population(
     fitness_fn: Callable[[Any, int], float],
     attach_hardware_leaves: bool,
     device_type_by_id: Optional[Dict[int, str]] = None,
+    feasibility_cfg: Optional[FeasibilityConfig] = None,
 ) -> None:
     """Final fallback: keep the structure/device assignment, resample batch knobs.
 
@@ -833,6 +910,7 @@ def _fill_batch_variant_population(
             evo_cfg.enable_subgraph_batch_mut,
             device_type_by_id=device_type_by_id,
             max_mutated_subgraphs=evo_cfg.subgraph_batch_max_mutated,
+            feasibility_cfg=feasibility_cfg,
         )
 
         _try_register_individual(
@@ -842,6 +920,7 @@ def _fill_batch_variant_population(
             root_init=root_init,
             fitness_fn=fitness_fn,
             attach_hardware_leaves=attach_hardware_leaves,
+            feasibility_cfg=feasibility_cfg,
         )
 
 
@@ -856,6 +935,7 @@ def _fill_numeric_variant_population(
     fitness_fn: Callable[[Any, int], float],
     attach_hardware_leaves: bool,
     device_type_by_id: Optional[Dict[int, str]] = None,
+    feasibility_cfg: Optional[FeasibilityConfig] = None,
 ) -> None:
     """Final fallback after batch-only variants: keep validated structures/devices,
     but resample attrs and batch knobs to unlock additional unique seeds.
@@ -880,6 +960,7 @@ def _fill_numeric_variant_population(
             evo_cfg.enable_subgraph_batch_mut,
             device_type_by_id=device_type_by_id,
             max_mutated_subgraphs=evo_cfg.subgraph_batch_max_mutated,
+            feasibility_cfg=feasibility_cfg,
         )
 
         _try_register_individual(
@@ -889,6 +970,7 @@ def _fill_numeric_variant_population(
             root_init=root_init,
             fitness_fn=fitness_fn,
             attach_hardware_leaves=attach_hardware_leaves,
+            feasibility_cfg=feasibility_cfg,
         )
 
 
@@ -905,6 +987,7 @@ def _fill_population_mixed(
     root_init: RootInit,
     fitness_fn: Callable[[Any, int], float],
     attach_hardware_leaves: bool,
+    feasibility_cfg: Optional[FeasibilityConfig] = None,
 ) -> None:
     if target_count <= 0:
         return
@@ -921,6 +1004,7 @@ def _fill_population_mixed(
         devices=devices, device_type_by_id=device_type_by_id,
         root_init=root_init, fitness_fn=fitness_fn,
         attach_hardware_leaves=attach_hardware_leaves,
+        feasibility_cfg=feasibility_cfg,
     )
     _fill_stratified_population(
         pop, seen, c_strat,
@@ -928,6 +1012,7 @@ def _fill_population_mixed(
         devices=devices, device_type_by_id=device_type_by_id,
         root_init=root_init, fitness_fn=fitness_fn,
         attach_hardware_leaves=attach_hardware_leaves,
+        feasibility_cfg=feasibility_cfg,
     )
     _fill_random_population(
         pop, seen, c_rand,
@@ -935,6 +1020,7 @@ def _fill_population_mixed(
         devices=devices, device_type_by_id=device_type_by_id,
         root_init=root_init, fitness_fn=fitness_fn,
         attach_hardware_leaves=attach_hardware_leaves,
+        feasibility_cfg=feasibility_cfg,
     )
 
     # Phase 2: adaptive backfill. If high-quality seed pools are exhausted,
@@ -956,6 +1042,7 @@ def _fill_population_mixed(
             devices=devices, device_type_by_id=device_type_by_id,
             root_init=root_init, fitness_fn=fitness_fn,
             attach_hardware_leaves=attach_hardware_leaves,
+            feasibility_cfg=feasibility_cfg,
         )
         if len(pop) - start_len < target_count:
             _fill_stratified_population(
@@ -964,6 +1051,7 @@ def _fill_population_mixed(
                 devices=devices, device_type_by_id=device_type_by_id,
                 root_init=root_init, fitness_fn=fitness_fn,
                 attach_hardware_leaves=attach_hardware_leaves,
+                feasibility_cfg=feasibility_cfg,
             )
         if len(pop) - start_len < target_count:
             _fill_random_population(
@@ -972,6 +1060,7 @@ def _fill_population_mixed(
                 devices=devices, device_type_by_id=device_type_by_id,
                 root_init=root_init, fitness_fn=fitness_fn,
                 attach_hardware_leaves=attach_hardware_leaves,
+                feasibility_cfg=feasibility_cfg,
             )
 
         if len(pop) == before:
@@ -984,6 +1073,7 @@ def _fill_population_mixed(
                 root_init=root_init, fitness_fn=fitness_fn,
                 attach_hardware_leaves=attach_hardware_leaves,
                 device_type_by_id=device_type_by_id,
+                feasibility_cfg=feasibility_cfg,
             )
             if len(pop) == before:
                 _fill_numeric_variant_population(
@@ -992,6 +1082,7 @@ def _fill_population_mixed(
                     root_init=root_init, fitness_fn=fitness_fn,
                     attach_hardware_leaves=attach_hardware_leaves,
                     device_type_by_id=device_type_by_id,
+                    feasibility_cfg=feasibility_cfg,
                 )
             if len(pop) == before:
                 stagnation_rounds += 1
@@ -1011,6 +1102,7 @@ def initialize_population(
     device_type_by_id: Optional[Dict[int, str]] = None,
     fitness_fn: Callable[[Any, int], float],
     attach_hardware_leaves: bool = True,
+    feasibility_cfg: Optional[FeasibilityConfig] = None,
 ) -> List[Individual]:
     """Pattern/device-abstraction aware mixed initialization with global dedup."""
     pop: List[Individual] = []
@@ -1028,6 +1120,7 @@ def initialize_population(
         root_init=root_init,
         fitness_fn=fitness_fn,
         attach_hardware_leaves=attach_hardware_leaves,
+        feasibility_cfg=feasibility_cfg,
     )
 
     if len(pop) < init_cfg.population_size:
@@ -1056,6 +1149,7 @@ def initialize_population_with_seeds(
     attach_hardware_leaves: bool = True,
     strict_device_partition: bool = True,
     device_type_by_id: Optional[Dict[int, str]] = None,
+    feasibility_cfg: Optional[FeasibilityConfig] = None,
 ) -> List[Individual]:
     """Seed-aware initialization: external seeds first, then mixed-fill the remainder with global dedup."""
     pop: List[Individual] = []
@@ -1070,6 +1164,7 @@ def initialize_population_with_seeds(
                 evo_cfg.enable_subgraph_batch_mut,
                 device_type_by_id=device_type_by_id,
                 max_mutated_subgraphs=evo_cfg.subgraph_batch_max_mutated,
+                feasibility_cfg=feasibility_cfg,
             )
         _try_register_individual(
             pop,
@@ -1078,6 +1173,7 @@ def initialize_population_with_seeds(
             root_init=root_init,
             fitness_fn=fitness_fn,
             attach_hardware_leaves=attach_hardware_leaves,
+            feasibility_cfg=feasibility_cfg,
         )
 
     if seed_individuals:
@@ -1102,6 +1198,7 @@ def initialize_population_with_seeds(
                     evo_cfg.enable_subgraph_batch_mut,
                     device_type_by_id=device_type_by_id,
                     max_mutated_subgraphs=evo_cfg.subgraph_batch_max_mutated,
+                    feasibility_cfg=feasibility_cfg,
                 )
             except Exception:
                 continue
@@ -1124,6 +1221,7 @@ def initialize_population_with_seeds(
             root_init=root_init,
             fitness_fn=fitness_fn,
             attach_hardware_leaves=attach_hardware_leaves,
+            feasibility_cfg=feasibility_cfg,
         )
 
     if len(pop) < init_cfg.population_size:
@@ -1733,6 +1831,7 @@ def evolve(
     root_init: RootInit,
     device_type_by_id: Optional[Dict[int, str]] = None,
     fitness_fn: Callable[[Any, int], float],
+    feasibility_cfg: Optional[FeasibilityConfig] = None,
     # 使用经验进行种群初始化
     with_pop_seeds: bool = False,
     pop_seed_roots: Optional[Sequence[Any]] = None,
@@ -1767,6 +1866,7 @@ def evolve(
             fitness_fn=fitness_fn,
             attach_hardware_leaves=attach_hardware_leaves,
             device_type_by_id=device_type_by_id,
+            feasibility_cfg=feasibility_cfg,
         )
     else:
         pop = initialize_population_with_seeds(
@@ -1781,6 +1881,7 @@ def evolve(
             attach_hardware_leaves=attach_hardware_leaves,
             strict_device_partition=True,
             device_type_by_id=device_type_by_id,
+            feasibility_cfg=feasibility_cfg,
         )
 
     for init_ind in pop:
@@ -1802,6 +1903,8 @@ def evolve(
             # 3. attrs shape 匹配“有效 arity”（含 leaf=设备组大小）
             ind.check_legality()
         except Exception:
+            return None
+        if not _repair_sub_graph_batch_sizes_by_feasibility(ind, feasibility_cfg):
             return None
         key = canonical_key(ind)
         ind.uid = key
@@ -1910,6 +2013,7 @@ def evolve(
                 evo_cfg.enable_subgraph_batch_mut,
                 device_type_by_id=device_type_by_id,
                 max_mutated_subgraphs=evo_cfg.subgraph_batch_max_mutated,
+                feasibility_cfg=feasibility_cfg,
             )
 
             child2 = eval_ind(child)

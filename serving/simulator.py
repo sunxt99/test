@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple
 import numpy as np
-from math import ceil
+from math import ceil, floor
 import random
 
 from system.config import ModelConfig
@@ -296,8 +296,12 @@ class Simulator:
                 step_time_s = sub_batch_num * sub_batch_step_time_s
                 # update delay time for requests
                 for idx, req in enumerate(self.active):
-                    offset_cycle_num = ceil(idx / sub_batch_size)
-                    req.accum_delay_time += sub_batch_step_time_s * offset_cycle_num * evaluation_cycle_stride
+                    if req in sub_batch_active:
+                        continue
+                    offset_cycle_num = floor(idx / sub_batch_size)
+                    acc_times =  min(evaluation_cycle_stride, (req.target_gen_tokens - req.gen_tokens))
+                    req.accum_delay_time += sub_batch_step_time_s * offset_cycle_num * acc_times
+
             self.perf_result_history = step_time_s
         else:
             step_time_s = self.perf_result_history

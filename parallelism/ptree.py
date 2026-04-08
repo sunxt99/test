@@ -46,6 +46,9 @@ class ParallelismTree:
             13: build_case_13,
             14: build_case_14,
             15: build_case_15,
+            16: build_case_16,
+            17: build_case_17,
+            18: build_case_18,
         }
         try:
             build_fn = BUILD_CASES[case_idx]

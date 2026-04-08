@@ -26,6 +26,8 @@ def main():
         max_batch_hi=args.max_batch_hi,
         max_batch_lo=args.max_batch_lo,
         reserve_hi=args.reserve_hi,
+        peak_seq_len=args.peak_seq_len,
+        runtime_reserve_ratio=args.runtime_reserve_ratio,
         max_wait_s=args.max_wait_ms / 1000.0,
         max_wait_hi_s=args.max_wait_hi_ms / 1000.0,
         seed=args.seed,
@@ -56,6 +58,10 @@ def main():
                                 "ftr": round(sum(f_dist) / (sys_cfg.lam * sys_cfg.t_end),3),
                                 # processed_total_ratio
                                 "ptr": round(sum(p_dist) / (sys_cfg.lam * sys_cfg.t_end),3),
+                                # pcase-path sub-graph batch debug info
+                                "peak_seq_len": int(sys_cfg.peak_seq_len),
+                                "runtime_reserve_ratio": float(sys_cfg.runtime_reserve_ratio),
+                                "subgraph_batch_info": getattr(system, "last_subgraph_batch_info", []),
                                 }, ensure_ascii=False) + "\n")
 
     end_t = time.perf_counter()

@@ -553,3 +553,178 @@ def build_case_15(request_type_num,
 
     # return node_0, [leaf_0, leaf_1, leaf_2, leaf_3, leaf_4, leaf_5, leaf_6, leaf_7]
     return node_0, [leaf_0, leaf_4, leaf_1, leaf_5, leaf_2, leaf_6, leaf_3, leaf_7]
+
+def build_case_16(request_type_num,
+                 total_layer_num):
+    # ------------------ CASE 3 --------------------------
+    node_0 = ModuleParallelismNode(name='p0',
+                                   dp_attr=[[0.0, 1.0]] * request_type_num,
+                                   pp_attr=[0,total_layer_num-1],
+                                   tp_attr=[0.0, 1.0],
+                                   xp_attr=XpTag.BOTH,
+                                   parallel_attr=[XpTag.LINEAR, XpTag.ATTENTION])
+    node_1 = TensorParallelismNode(name='p1', parallel_attr=[0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125])
+    node_2 = TensorParallelismNode(name='p2', parallel_attr=[0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125])
+
+    node_0.add_child(node_1)
+    node_0.add_child(node_2)
+
+    leaf_0 = BasicHardwareNode(idx = 0, name='l0')
+    leaf_1 = BasicHardwareNode(idx = 1, name='l1')
+    leaf_2 = BasicHardwareNode(idx = 2, name='l2')
+    leaf_3 = BasicHardwareNode(idx = 3, name='l3')
+    leaf_4 = BasicHardwareNode(idx = 4, name='l4')
+    leaf_5 = BasicHardwareNode(idx = 5, name='l5')
+    leaf_6 = BasicHardwareNode(idx = 6, name='l6')
+    leaf_7 = BasicHardwareNode(idx = 7, name='l7')
+    leaf_8 = BasicHardwareNode(idx = 8, name='l8')
+    leaf_9 = BasicHardwareNode(idx = 9, name='l9')
+    leaf_10 = BasicHardwareNode(idx = 10, name='l10')
+    leaf_11 = BasicHardwareNode(idx = 11, name='l11')
+    leaf_12 = BasicHardwareNode(idx = 12, name='l12')
+    leaf_13 = BasicHardwareNode(idx = 13, name='l13')
+    leaf_14 = BasicHardwareNode(idx = 14, name='l14')
+    leaf_15 = BasicHardwareNode(idx = 15, name='l15')
+
+    node_1.add_child(leaf_0)
+    node_1.add_child(leaf_1)
+    node_1.add_child(leaf_2)
+    node_1.add_child(leaf_3)
+    node_1.add_child(leaf_4)
+    node_1.add_child(leaf_5)
+    node_1.add_child(leaf_6)
+    node_1.add_child(leaf_7)
+    node_2.add_child(leaf_8)
+    node_2.add_child(leaf_9)
+    node_2.add_child(leaf_10)
+    node_2.add_child(leaf_11)
+    node_2.add_child(leaf_12)
+    node_2.add_child(leaf_13)
+    node_2.add_child(leaf_14)
+    node_2.add_child(leaf_15)
+
+    # return node_0, [leaf_0, leaf_1, leaf_2, leaf_3, leaf_4, leaf_5, leaf_6, leaf_7]
+    return node_0, [leaf_0, leaf_8, leaf_1, leaf_9, leaf_2, leaf_10, leaf_3, leaf_11,
+                    leaf_4, leaf_12, leaf_5, leaf_13, leaf_6, leaf_14, leaf_7, leaf_15]
+
+def build_case_17(request_type_num,
+                 total_layer_num):
+    # ------------------ CASE 3 --------------------------
+    node_0 = PipelineParallelismNode(name='p0',
+                                     dp_attr=[[0.0, 1.0]] * request_type_num,
+                                     pp_attr=[0, total_layer_num - 1],
+                                     tp_attr=[0.0, 1.0],
+                                     xp_attr=XpTag.BOTH,
+                                     parallel_attr = [0.5, 0.5])
+    node_1 = ModuleParallelismNode(name='p1', parallel_attr=[XpTag.LINEAR, XpTag.ATTENTION])
+    node_2 = ModuleParallelismNode(name='p2', parallel_attr=[XpTag.LINEAR, XpTag.ATTENTION])
+    node_3 = TensorParallelismNode(name='p3', parallel_attr=[0.25, 0.25, 0.25, 0.25])
+    node_4 = TensorParallelismNode(name='p4', parallel_attr=[0.25, 0.25, 0.25, 0.25])
+    node_5 = TensorParallelismNode(name='p5', parallel_attr=[0.25, 0.25, 0.25, 0.25])
+    node_6 = TensorParallelismNode(name='p6', parallel_attr=[0.25, 0.25, 0.25, 0.25])
+
+    node_0.add_child(node_1)
+    node_0.add_child(node_2)
+    node_1.add_child(node_3)
+    node_1.add_child(node_4)
+    node_2.add_child(node_5)
+    node_2.add_child(node_6)
+
+    leaf_0 = BasicHardwareNode(idx = 0, name='l0')
+    leaf_1 = BasicHardwareNode(idx = 1, name='l1')
+    leaf_2 = BasicHardwareNode(idx = 2, name='l2')
+    leaf_3 = BasicHardwareNode(idx = 3, name='l3')
+    leaf_4 = BasicHardwareNode(idx = 4, name='l4')
+    leaf_5 = BasicHardwareNode(idx = 5, name='l5')
+    leaf_6 = BasicHardwareNode(idx = 6, name='l6')
+    leaf_7 = BasicHardwareNode(idx = 7, name='l7')
+    leaf_8 = BasicHardwareNode(idx = 8, name='l8')
+    leaf_9 = BasicHardwareNode(idx = 9, name='l9')
+    leaf_10 = BasicHardwareNode(idx = 10, name='l10')
+    leaf_11 = BasicHardwareNode(idx = 11, name='l11')
+    leaf_12 = BasicHardwareNode(idx = 12, name='l12')
+    leaf_13 = BasicHardwareNode(idx = 13, name='l13')
+    leaf_14 = BasicHardwareNode(idx = 14, name='l14')
+    leaf_15 = BasicHardwareNode(idx = 15, name='l15')
+
+    node_3.add_child(leaf_0)
+    node_3.add_child(leaf_1)
+    node_3.add_child(leaf_2)
+    node_3.add_child(leaf_3)
+    node_4.add_child(leaf_4)
+    node_4.add_child(leaf_5)
+    node_4.add_child(leaf_6)
+    node_4.add_child(leaf_7)
+    node_5.add_child(leaf_8)
+    node_5.add_child(leaf_9)
+    node_5.add_child(leaf_10)
+    node_5.add_child(leaf_11)
+    node_6.add_child(leaf_12)
+    node_6.add_child(leaf_13)
+    node_6.add_child(leaf_14)
+    node_6.add_child(leaf_15)
+
+    # return node_0, [leaf_0, leaf_1, leaf_2, leaf_3, leaf_4, leaf_5, leaf_6, leaf_7]
+    return node_0, [leaf_0, leaf_4, leaf_1, leaf_5, leaf_2, leaf_6, leaf_3, leaf_7,
+                    leaf_8, leaf_12, leaf_9, leaf_13, leaf_10, leaf_14, leaf_11, leaf_15]
+
+def build_case_18(request_type_num,
+                 total_layer_num):
+    # ------------------ CASE 4 --------------------------
+    node_0 = DataParallelismNode(name='p0',
+                                 dp_attr=[[0.0, 1.0]] * request_type_num,
+                                 pp_attr=[0, total_layer_num - 1],
+                                 tp_attr=[0.0, 1.0],
+                                 xp_attr=XpTag.BOTH,
+                                 parallel_attr=[[1.0, 0.5, 0.0], [0.5, 0.0, 1.0], [0.0, 0.0, 1.0]])
+                                 # parallel_attr=[[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+                                 # parallel_attr=[[0.3, 0.3, 0.3], [0.3, 0.3, 0.3], [0.3, 0.3, 0.3]])
+    node_1 = ModuleParallelismNode(name='p1', parallel_attr=[XpTag.LINEAR, XpTag.ATTENTION])
+    node_2 = TensorParallelismNode(name='p2', parallel_attr=[0.25, 0.25, 0.25, 0.25])
+    node_3 = TensorParallelismNode(name='p3', parallel_attr=[0.25, 0.25, 0.25, 0.25])
+    node_4 = TensorParallelismNode(name='p4', parallel_attr=[0.25, 0.25, 0.25, 0.25])
+    node_5 = TensorParallelismNode(name='p5', parallel_attr=[0.25, 0.25, 0.25, 0.25])
+
+    node_0.add_child(node_1)
+    node_0.add_child(node_4)
+    node_0.add_child(node_5)
+    node_1.add_child(node_2)
+    node_1.add_child(node_3)
+
+    leaf_0 = BasicHardwareNode(idx = 0, name='l0')
+    leaf_1 = BasicHardwareNode(idx = 1, name='l1')
+    leaf_2 = BasicHardwareNode(idx = 2, name='l2')
+    leaf_3 = BasicHardwareNode(idx = 3, name='l3')
+    leaf_4 = BasicHardwareNode(idx = 4, name='l4')
+    leaf_5 = BasicHardwareNode(idx = 5, name='l5')
+    leaf_6 = BasicHardwareNode(idx = 6, name='l6')
+    leaf_7 = BasicHardwareNode(idx = 7, name='l7')
+    leaf_8 = BasicHardwareNode(idx = 8, name='l8')
+    leaf_9 = BasicHardwareNode(idx = 9, name='l9')
+    leaf_10 = BasicHardwareNode(idx = 10, name='l10')
+    leaf_11 = BasicHardwareNode(idx = 11, name='l11')
+    leaf_12 = BasicHardwareNode(idx = 12, name='l12')
+    leaf_13 = BasicHardwareNode(idx = 13, name='l13')
+    leaf_14 = BasicHardwareNode(idx = 14, name='l14')
+    leaf_15 = BasicHardwareNode(idx = 15, name='l15')
+
+    node_2.add_child(leaf_0)
+    node_2.add_child(leaf_1)
+    node_2.add_child(leaf_2)
+    node_2.add_child(leaf_3)
+    node_3.add_child(leaf_4)
+    node_3.add_child(leaf_5)
+    node_3.add_child(leaf_6)
+    node_3.add_child(leaf_7)
+
+    node_4.add_child(leaf_8)
+    node_4.add_child(leaf_9)
+    node_4.add_child(leaf_10)
+    node_4.add_child(leaf_11)
+    node_5.add_child(leaf_12)
+    node_5.add_child(leaf_13)
+    node_5.add_child(leaf_14)
+    node_5.add_child(leaf_15)
+
+    return node_0, [leaf_0, leaf_4, leaf_1, leaf_5, leaf_2, leaf_6, leaf_3, leaf_7,
+                    leaf_8, leaf_12, leaf_9, leaf_13, leaf_10, leaf_14, leaf_11, leaf_15]

@@ -1,8 +1,6 @@
 # run_evolution_system_v3.py
 from __future__ import annotations
 import ast
-import json
-import os
 from typing import Any, List, Sequence
 
 from utils.parse_args import parse_args
@@ -11,16 +9,12 @@ from system.config import SystemConfig, ModelConfigs
 from hardware.htree import HardwareTree
 
 from exploration.decoder import RootInit
+from exploration.feasibility import FeasibilityConfig
 from exploration.evolution_pareto import InitConfig, EvoConfig, evolve
 from exploration.fitness_adapter import make_fitness_fn, default_result_to_fitness
 from exploration.ind_io import print_individual,log_individual_json, save_individual_json, load_individual_json
 
-from parallelism.pcase import (
-    build_case_0, build_case_1, build_case_2, build_case_3, build_case_4,
-    build_case_5, build_case_6, build_case_7, build_case_8, build_case_9,
-    build_case_10, build_case_11, build_case_12, build_case_13, build_case_14,
-    build_case_15
-)
+from parallelism.pcase import *
 
 def result_to_fitness(sim_results: List[Any]) -> float:
     return default_result_to_fitness(sim_results)
@@ -59,17 +53,36 @@ def main() -> None:
         tp_attr=[0.0, 1.0],
     )
 
+    mem_cap_by_device_gb = {
+        int(d.idx): float(d.meta["mem_cap"])
+        for d in htree.devices
+        if d.meta.get("mem_cap") is not None
+    }
+    bytes_by_device = {int(d.idx): int(d.meta.get("byte", 2)) for d in htree.devices}
+
+    feasibility_cfg = FeasibilityConfig(
+        model_cfg=model_cfg,
+        root_init=root_init,
+        mem_cap_by_device_gb=mem_cap_by_device_gb,
+        bytes_by_device=bytes_by_device,
+        peak_seq_len=int(args.peak_seq_len),
+        runtime_reserve_ratio=float(args.runtime_reserve_ratio),
+        attach_hardware_leaves=True,
+    )
+
     fitness_fn = make_fitness_fn(
         sys_cfg,
         model_cfg,
         pareto_mode=True,
         req_prob=req_prob,
-        hcase_idx=0,
-        pcase_idx_for_init=3,
+        # hcase_idx=0,
+        # pcase_idx_for_init=3,
+        hcase_idx=args.hcase_index,
+        pcase_idx_for_init=args.pcase_index,
         result_to_fitness=result_to_fitness,
     )
 
-    init_cfg = InitConfig(population_size=80,
+    init_cfg = InitConfig(population_size=50,
                           # population_size=30,
                           max_depth=4,
                           max_children=8,
@@ -87,7 +100,7 @@ def main() -> None:
 
 
     evo_cfg = EvoConfig(generations=3,
-                        elite_size=15,
+                        elite_size=8,
 
                         p_rewrite_mut=0.5,
                         p_numeric_mut=0.5,
@@ -126,11 +139,15 @@ def main() -> None:
         13: build_case_13,
         14: build_case_14,
         15: build_case_15,
+        16: build_case_16,
+        17: build_case_17,
+        18: build_case_18,
     }
 
     # pop_seed_indexes = [3,4]
     # pop_seed_indexes = [0,1,4,12]
-    pop_seed_indexes = []
+    # pop_seed_indexes = []
+    pop_seed_indexes = [16,17,18]
     pop_seed_roots = []
     for i in pop_seed_indexes:
         if i not in builders:
@@ -157,6 +174,7 @@ def main() -> None:
         attach_hardware_leaves=True,
         random_seed=42,
         dse_out=args.dse_out,
+        feasibility_cfg=feasibility_cfg,
     )
 
     # Dump Pareto front (rank-0) objectives to jsonl if requested

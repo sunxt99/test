@@ -53,6 +53,10 @@ class SystemConfig:
     max_batch_lo: int = 256    # normal-only cap_total; also total cap in reserve mode
     reserve_hi: int = 16       # reserved slots for priority in reserve mode (hard reserve)
 
+    # Exploration-aligned memory feasibility knobs
+    peak_seq_len: int = 10240
+    runtime_reserve_ratio: float = 0.0
+
     # Idle batching wait (seconds)
     max_wait_s: float = 0.0       # normal-only idle wait
     max_wait_hi_s: float = 0.0    # priority-present idle wait (default 0 protects latency)
