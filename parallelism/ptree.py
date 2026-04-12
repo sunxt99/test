@@ -1,4 +1,6 @@
 from collections import defaultdict
+from dataclasses import dataclass, field
+import copy
 import random
 
 from system.config import SystemConfig, ModelConfig
@@ -10,10 +12,38 @@ from parallelism.ptraversal import *
 from parallelism.pperf import peer_to_peer_communication_pattern, all_reduce_communication_pattern
 
 from hardware.htree import HardwareTree
+
 from hardware.hperf import peer_to_peer_communication_time_cost, all_reduce_communication_time_cost
 
 
+@dataclass
+class ParallelismRunProfile:
+    total_time_ms: float
+    per_device_compute_ms: dict[str, float] = field(default_factory=dict)
+    per_device_comm_ms: dict[str, float] = field(default_factory=dict)
+    per_device_busy_wo_overlap_ms: dict[str, float] = field(default_factory=dict)
+    per_device_busy_wi_overlap_ms: dict[str, float] = field(default_factory=dict)
+
+    def scaled(self, factor: float) -> "ParallelismRunProfile":
+        if factor == 1.0:
+            return ParallelismRunProfile(
+                total_time_ms=self.total_time_ms,
+                per_device_compute_ms=dict(self.per_device_compute_ms),
+                per_device_comm_ms=dict(self.per_device_comm_ms),
+                per_device_busy_wo_overlap_ms=dict(self.per_device_busy_wo_overlap_ms),
+                per_device_busy_wi_overlap_ms=dict(self.per_device_busy_wi_overlap_ms),
+            )
+        return ParallelismRunProfile(
+            total_time_ms=self.total_time_ms * factor,
+            per_device_compute_ms={k: v * factor for k, v in self.per_device_compute_ms.items()},
+            per_device_comm_ms={k: v * factor for k, v in self.per_device_comm_ms.items()},
+            per_device_busy_wo_overlap_ms={k: v * factor for k, v in self.per_device_busy_wo_overlap_ms.items()},
+            per_device_busy_wi_overlap_ms={k: v * factor for k, v in self.per_device_busy_wi_overlap_ms.items()},
+        )
+
+
 class ParallelismTree:
+
     def __init__(self,
                  sys_cfg: SystemConfig,
                  model_cfg: ModelConfig,
@@ -135,7 +165,7 @@ class ParallelismTree:
         max_run_time_cost_ms = 0.0
         for begin_node in self.begin_nodes:
             leaf_nodes = derive_from_node(begin_node)
-            sub_graph_time_cost_ms = self.analyse_sub_graph(begin_node,
+            sub_graph_profile = self.analyse_sub_graph(begin_node,
                                                             leaf_nodes,
                                                             req_list_by_type,
                                                             req_type_distribution,
@@ -145,14 +175,15 @@ class ParallelismTree:
                                                             req_type_distribution_half1,
                                                             req_list_by_type_half2,
                                                             req_type_distribution_half2)
-            max_run_time_cost_ms = max(max_run_time_cost_ms, sub_graph_time_cost_ms)
+            max_run_time_cost_ms = max(max_run_time_cost_ms, sub_graph_profile.total_time_ms)
         return max_run_time_cost_ms
 
     def run_from_begin_node(self,
                             begin_node,
                             active_queue: List[Request],
                             use_pp_sub_batch: bool,
-                            use_mp_sub_batch: bool):
+                            use_mp_sub_batch: bool,
+                            return_profile: bool = False):
         req_list_by_type = [[] for _ in range(self.sys_cfg.req_type_num)]
         req_type_distribution = [0] * self.sys_cfg.req_type_num
 
@@ -184,7 +215,7 @@ class ParallelismTree:
                 req_type_distribution_half2[r.req_type] += 1
 
         leaf_nodes = derive_from_node(begin_node)
-        sub_graph_time_cost_ms = self.analyse_sub_graph(begin_node,
+        sub_graph_profile = self.analyse_sub_graph(begin_node,
                                                         leaf_nodes,
                                                         req_list_by_type,
                                                         req_type_distribution,
@@ -194,8 +225,8 @@ class ParallelismTree:
                                                         req_type_distribution_half1,
                                                         req_list_by_type_half2,
                                                         req_type_distribution_half2)
-        # print(len(active_queue), sub_graph_time_cost_ms)
-        return sub_graph_time_cost_ms
+        # print(len(active_queue), sub_graph_profile.total_time_ms)
+        return sub_graph_profile if return_profile else sub_graph_profile.total_time_ms
 
 
     def analyse_sub_graph(self,
@@ -208,7 +239,7 @@ class ParallelismTree:
                           req_list_by_type_half1: List[List[Request]] = None,
                           req_type_distribution_half1: List[int] = None,
                           req_list_by_type_half2: List[List[Request]] = None,
-                          req_type_distribution_half2: List[int] = None) -> float:
+                          req_type_distribution_half2: List[int] = None) -> ParallelismRunProfile:
 
         for leaf in leaf_nodes_of_subtree:
             assert leaf.is_leaf()
@@ -254,64 +285,87 @@ class ParallelismTree:
         # 记录每个 device 上的执行时间，用于 pipeline parallelism
         execution_time_of_leafs_ms = [0 for _ in range(len(leaf_nodes_of_subtree))]
 
+        # 最小改动版：记录每个 device 的原始计算/通信时间，
+        # 以及两种 busy 统计（不考虑 PP/MP 调度折叠）
+        per_device_compute_ms = defaultdict(float)
+        per_device_comm_ms = defaultdict(float)
+        per_device_busy_wo_overlap_ms = defaultdict(float)
+        per_device_busy_wi_overlap_ms = defaultdict(float)
+
         for layer_idx in range(self.model_cfg.layer_num):
             for module_idx in range(4):  # QKV / ATTN / PROJ / FFN
                 module_active_leaf_indexes = trigger_leaf_node(layer_idx, module_idx, leaf_nodes_of_subtree)
                 if frozenset(module_active_leaf_indexes) not in result_cache[module_idx]:
-                    computation_time_cost_ms = self.analyse_computation_pattern(root_of_subtree,
-                                                                                leaf_nodes_of_subtree,
-                                                                                module_idx,
-                                                                                module_active_leaf_indexes,
-                                                                                req_list_by_type,
-                                                                                req_type_distribution)
-                    communication_time_cost_ms = self.analyse_communication_pattern(root_of_subtree,
-                                                                                   leaf_nodes_of_subtree,
-                                                                                   layer_idx,
-                                                                                   module_idx,
-                                                                                   previous_module_active_leaf_indexes,
-                                                                                   module_active_leaf_indexes,
-                                                                                   req_type_distribution)
-                    computation_half1_time_cost_ms = self.analyse_computation_pattern(root_of_subtree,
-                                                                                leaf_nodes_of_subtree,
-                                                                                module_idx,
-                                                                                module_active_leaf_indexes,
-                                                                                req_list_by_type_half1,
-                                                                                req_type_distribution_half1)
-                    communication_half1_time_cost_ms = self.analyse_communication_pattern(root_of_subtree,
-                                                                                   leaf_nodes_of_subtree,
-                                                                                   layer_idx,
-                                                                                   module_idx,
-                                                                                   previous_module_active_leaf_indexes,
-                                                                                   module_active_leaf_indexes,
-                                                                                   req_type_distribution_half1)
-                    computation_half2_time_cost_ms = self.analyse_computation_pattern(root_of_subtree,
-                                                                                leaf_nodes_of_subtree,
-                                                                                module_idx,
-                                                                                module_active_leaf_indexes,
-                                                                                req_list_by_type_half2,
-                                                                                req_type_distribution_half2)
-                    communication_half2_time_cost_ms = self.analyse_communication_pattern(root_of_subtree,
-                                                                                   leaf_nodes_of_subtree,
-                                                                                   layer_idx,
-                                                                                   module_idx,
-                                                                                   previous_module_active_leaf_indexes,
-                                                                                   module_active_leaf_indexes,
-                                                                                   req_type_distribution_half2)
-                    # module_time_cost_ms = computation_time_cost_ms + communication_time_cost_ms
-                    module_time_cost_ms = max(computation_time_cost_ms, communication_time_cost_ms)
-                    # module_half1_time_cost_ms = computation_half1_time_cost_ms + communication_half1_time_cost_ms
-                    module_half1_time_cost_ms = max(computation_half1_time_cost_ms, communication_half1_time_cost_ms)
-                    # module_half2_time_cost_ms = computation_half2_time_cost_ms + communication_half2_time_cost_ms
-                    module_half2_time_cost_ms = max(computation_half2_time_cost_ms, communication_half2_time_cost_ms)
+                    computation_time_cost_ms, module_device_compute_ms = self.analyse_computation_pattern(root_of_subtree,
+                                                                                                          leaf_nodes_of_subtree,
+                                                                                                          module_idx,
+                                                                                                          module_active_leaf_indexes,
+                                                                                                          req_list_by_type,
+                                                                                                          req_type_distribution)
+                    communication_time_cost_ms, module_device_comm_ms = self.analyse_communication_pattern(root_of_subtree,
+                                                                                                           leaf_nodes_of_subtree,
+                                                                                                           layer_idx,
+                                                                                                           module_idx,
+                                                                                                           previous_module_active_leaf_indexes,
+                                                                                                           module_active_leaf_indexes,
+                                                                                                           req_type_distribution)
+                    computation_half1_time_cost_ms, _ = self.analyse_computation_pattern(root_of_subtree,
+                                                                                         leaf_nodes_of_subtree,
+                                                                                         module_idx,
+                                                                                         module_active_leaf_indexes,
+                                                                                         req_list_by_type_half1,
+                                                                                         req_type_distribution_half1)
+                    communication_half1_time_cost_ms, _ = self.analyse_communication_pattern(root_of_subtree,
+                                                                                            leaf_nodes_of_subtree,
+                                                                                            layer_idx,
+                                                                                            module_idx,
+                                                                                            previous_module_active_leaf_indexes,
+                                                                                            module_active_leaf_indexes,
+                                                                                            req_type_distribution_half1)
+                    computation_half2_time_cost_ms, _ = self.analyse_computation_pattern(root_of_subtree,
+                                                                                         leaf_nodes_of_subtree,
+                                                                                         module_idx,
+                                                                                         module_active_leaf_indexes,
+                                                                                         req_list_by_type_half2,
+                                                                                         req_type_distribution_half2)
+                    communication_half2_time_cost_ms, _ = self.analyse_communication_pattern(root_of_subtree,
+                                                                                            leaf_nodes_of_subtree,
+                                                                                            layer_idx,
+                                                                                            module_idx,
+                                                                                            previous_module_active_leaf_indexes,
+                                                                                            module_active_leaf_indexes,
+                                                                                            req_type_distribution_half2)
+                    module_time_cost_ms = computation_time_cost_ms + communication_time_cost_ms
+                    # module_time_cost_ms = max(computation_time_cost_ms, communication_time_cost_ms)
+                    module_half1_time_cost_ms = computation_half1_time_cost_ms + communication_half1_time_cost_ms
+                    # module_half1_time_cost_ms = max(computation_half1_time_cost_ms, communication_half1_time_cost_ms)
+                    module_half2_time_cost_ms = computation_half2_time_cost_ms + communication_half2_time_cost_ms
+                    # module_half2_time_cost_ms = max(computation_half2_time_cost_ms, communication_half2_time_cost_ms)
                     module_half_time_cost_ms = max(module_half1_time_cost_ms, module_half2_time_cost_ms)
                     # print(computation_time_cost_ms, communication_time_cost_ms)
                     # layer_idx = 0 和 module_idx = 0 的情况不能记录进 cache，否则后面的 tp 都没有了
                     if layer_idx != 0 or module_idx != 0:
-                        result_cache[module_idx][frozenset(module_active_leaf_indexes)] = module_time_cost_ms
+                        result_cache[module_idx][frozenset(module_active_leaf_indexes)] = (
+                            module_time_cost_ms,
+                            dict(module_device_compute_ms),
+                            dict(module_device_comm_ms),
+                        )
                         result_cache_half[module_idx][frozenset(module_active_leaf_indexes)] = module_half_time_cost_ms
                 else:
-                    module_time_cost_ms = result_cache[module_idx][frozenset(module_active_leaf_indexes)]
+                    module_time_cost_ms, module_device_compute_ms, module_device_comm_ms = result_cache[module_idx][frozenset(module_active_leaf_indexes)]
                     module_half_time_cost_ms = result_cache_half[module_idx][frozenset(module_active_leaf_indexes)]
+
+                for device_name, value in module_device_compute_ms.items():
+                    per_device_compute_ms[device_name] += value
+                for device_name, value in module_device_comm_ms.items():
+                    per_device_comm_ms[device_name] += value
+
+                module_device_names = set(module_device_compute_ms.keys()) | set(module_device_comm_ms.keys())
+                for device_name in module_device_names:
+                    compute_ms = module_device_compute_ms.get(device_name, 0.0)
+                    comm_ms = module_device_comm_ms.get(device_name, 0.0)
+                    per_device_busy_wo_overlap_ms[device_name] += compute_ms + comm_ms
+                    per_device_busy_wi_overlap_ms[device_name] += max(compute_ms, comm_ms)
 
                 if module_idx == 0:
                     layer_qkv_time_ms[layer_idx] = module_time_cost_ms
@@ -397,9 +451,17 @@ class ParallelismTree:
                 mp_subbatch_processing_time_cost_ms += next_double_sub_batch_time_ms
                 previous_leaf_list = current_leaf_list
 
-        return max(execution_time_of_leafs_ms) if use_pp_sub_batch else \
+        total_time_ms = max(execution_time_of_leafs_ms) if use_pp_sub_batch else \
                 mp_subbatch_processing_time_cost_ms if use_mp_sub_batch else \
                 original_processing_time_cost_ms
+
+        return ParallelismRunProfile(
+            total_time_ms=total_time_ms,
+            per_device_compute_ms=dict(per_device_compute_ms),
+            per_device_comm_ms=dict(per_device_comm_ms),
+            per_device_busy_wo_overlap_ms=dict(per_device_busy_wo_overlap_ms),
+            per_device_busy_wi_overlap_ms=dict(per_device_busy_wi_overlap_ms),
+        )
 
     def analyse_computation_pattern(self,
                                     root_of_subtree: BasicParallelismNode,
@@ -410,6 +472,7 @@ class ParallelismTree:
                                     req_type_distribution: List[int],
                                     print_detail = False):
         max_computation_time_ms = 0.0
+        per_device_compute_ms = defaultdict(float)
 
         if module_idx == 0:
             if print_detail:
@@ -422,8 +485,9 @@ class ParallelismTree:
                 K_size = self.model_cfg.hidden_size # input dimension
                 N_size = (active_leaf.tp_attr[1] - active_leaf.tp_attr[0]) * (self.model_cfg.hidden_size + 2 * self.model_cfg.kv_hidden_size) # output dimension
                 if M_size > 0 and K_size > 0 and N_size > 0:
-                    max_computation_time_ms = max(max_computation_time_ms,
-                                            self.mapper[active_leaf.name].compute_gemm_time_cost(M_size, N_size, K_size))
+                    computation_time_ms = self.mapper[active_leaf.name].compute_gemm_time_cost(M_size, N_size, K_size)
+                    per_device_compute_ms[self.mapper[active_leaf.name].name] += computation_time_ms
+                    max_computation_time_ms = max(max_computation_time_ms, computation_time_ms)
         elif module_idx == 1:
             if print_detail:
                 print("------ Compute ATTN ------")
@@ -452,6 +516,7 @@ class ParallelismTree:
                         comp_ops += query_head_num * self.model_cfg.head_dim * sequence_length * 2
                 if mem_ops > 0:
                     computation_time_ms += self.mapper[active_leaf.name].compute_gemm_time_cost_by_ops(comp_ops, mem_ops)
+                    per_device_compute_ms[self.mapper[active_leaf.name].name] += computation_time_ms
 
                 max_computation_time_ms = max(max_computation_time_ms, computation_time_ms)
 
@@ -466,8 +531,9 @@ class ParallelismTree:
                 K_size =  (active_leaf.tp_attr[1] - active_leaf.tp_attr[0]) * self.model_cfg.hidden_size
                 N_size = self.model_cfg.hidden_size
                 if M_size > 0 and K_size > 0 and N_size > 0:
-                    max_computation_time_ms = max(max_computation_time_ms,
-                                                  self.mapper[active_leaf.name].compute_gemm_time_cost(M_size, N_size, K_size))
+                    computation_time_ms = self.mapper[active_leaf.name].compute_gemm_time_cost(M_size, N_size, K_size)
+                    per_device_compute_ms[self.mapper[active_leaf.name].name] += computation_time_ms
+                    max_computation_time_ms = max(max_computation_time_ms, computation_time_ms)
 
         else:
             if print_detail:
@@ -482,11 +548,12 @@ class ParallelismTree:
                 N_size = (active_leaf.tp_attr[1] - active_leaf.tp_attr[0]) * self.model_cfg.intermediate_size
                 P_size = self.model_cfg.hidden_size
                 if M_size > 0 and K_size > 0 and N_size > 0 and P_size > 0:
-                    max_computation_time_ms = max(max_computation_time_ms,
-                                              self.mapper[active_leaf.name].compute_gemm_time_cost(M_size, N_size, K_size) + \
-                                              self.mapper[active_leaf.name].compute_gemm_time_cost(M_size, P_size, N_size))
+                    computation_time_ms = self.mapper[active_leaf.name].compute_gemm_time_cost(M_size, N_size, K_size) + \
+                                          self.mapper[active_leaf.name].compute_gemm_time_cost(M_size, P_size, N_size)
+                    per_device_compute_ms[self.mapper[active_leaf.name].name] += computation_time_ms
+                    max_computation_time_ms = max(max_computation_time_ms, computation_time_ms)
 
-        return max_computation_time_ms
+        return max_computation_time_ms, dict(per_device_compute_ms)
 
     def analyse_communication_pattern(self,
                                       root_of_subtree: BasicParallelismNode,
@@ -497,6 +564,7 @@ class ParallelismTree:
                                       req_type_distribution: List[int],
                                       print_detail = False):
         max_comm_time_ms = 0.0
+        per_device_comm_ms = defaultdict(float)
 
         # if layer_idx == 0 and module_idx == 0:
         #     if print_detail:
@@ -518,6 +586,8 @@ class ParallelismTree:
                 all_reduce_hardware_list = [self.mapper[name] for name in all_reduce_leaf_name_list]
                 all_reduce_comm_time_ms = all_reduce_communication_time_cost(all_reduce_hardware_list, all_reduce_data_size)
                 max_all_reduce_comm_time_ms += all_reduce_comm_time_ms
+                for hardware in all_reduce_hardware_list:
+                    per_device_comm_ms[hardware.name] += all_reduce_comm_time_ms
 
             # peer to peer 开销
             if src_leaf_indexes != dst_leaf_indexes:
@@ -535,9 +605,12 @@ class ParallelismTree:
                                                                dst_node,
                                                                req_type_distribution,
                                                                self.model_cfg.hidden_size)
-                        comm_time_ms += peer_to_peer_communication_time_cost(self.mapper[tmp_src_node.name],
-                                                                            self.mapper[dst_node.name],
-                                                                            comm_size_byte)
+                        peer_comm_time_ms = peer_to_peer_communication_time_cost(self.mapper[tmp_src_node.name],
+                                                                                 self.mapper[dst_node.name],
+                                                                                 comm_size_byte)
+                        comm_time_ms += peer_comm_time_ms
+                        per_device_comm_ms[self.mapper[tmp_src_node.name].name] += peer_comm_time_ms
+                        per_device_comm_ms[self.mapper[dst_node.name].name] += peer_comm_time_ms
                     max_comm_time_ms = max(max_comm_time_ms, comm_time_ms)
 
             max_comm_time_ms += max_all_reduce_comm_time_ms
@@ -569,9 +642,12 @@ class ParallelismTree:
                                                                                   dst_node,
                                                                                   req_type_distribution,
                                                                                   self.model_cfg.hidden_size)
-                        comm_time_ms += peer_to_peer_communication_time_cost(self.mapper[src_node.name],
-                                                                            self.mapper[dst_node.name],
-                                                                            comm_size_byte)
+                        peer_comm_time_ms = peer_to_peer_communication_time_cost(self.mapper[src_node.name],
+                                                                                 self.mapper[dst_node.name],
+                                                                                 comm_size_byte)
+                        comm_time_ms += peer_comm_time_ms
+                        per_device_comm_ms[self.mapper[src_node.name].name] += peer_comm_time_ms
+                        per_device_comm_ms[self.mapper[dst_node.name].name] += peer_comm_time_ms
                     max_comm_time_ms = max(comm_time_ms, max_comm_time_ms)
 
         elif module_idx == 3:  # PROJ -> FFN
@@ -590,11 +666,13 @@ class ParallelismTree:
                     all_reduce_comm_time_ms = all_reduce_communication_time_cost(all_reduce_hardware_list,
                                                                                  all_reduce_data_size)
                     max_all_reduce_comm_time_ms += all_reduce_comm_time_ms
+                    for hardware in all_reduce_hardware_list:
+                        per_device_comm_ms[hardware.name] += all_reduce_comm_time_ms
                     # max_all_reduce_comm_time_ms = max(max_all_reduce_comm_time_ms, all_reduce_comm_time_ms)
                 max_comm_time_ms = max(max_comm_time_ms, max_all_reduce_comm_time_ms)
             else:
                 raise ValueError
-        return max_comm_time_ms
+        return max_comm_time_ms, dict(per_device_comm_ms)
 
     def hardware_mapping(self):
         # 将 parallel tree 中的每个 leaf 对应到 hardware 中的 leaf

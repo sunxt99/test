@@ -18,6 +18,80 @@ def _fmt_ms(x_s: float) -> str:
     return f"{x_s * 1000.0:.3f}"
 
 
+
+def summarize_device_usage_data(res_list: List[SimulationResult],
+                                sim_time_end: float):
+    horizon_ms = float(sim_time_end) * 1000.0
+    merged_compute_ms = {}
+    merged_comm_ms = {}
+    merged_busy_wo_overlap_ms = {}
+    merged_busy_wi_overlap_ms = {}
+
+    for res in res_list:
+        for device_name, value in getattr(res, "device_compute_ms", {}).items():
+            merged_compute_ms[device_name] = merged_compute_ms.get(device_name, 0.0) + float(value)
+        for device_name, value in getattr(res, "device_comm_ms", {}).items():
+            merged_comm_ms[device_name] = merged_comm_ms.get(device_name, 0.0) + float(value)
+        for device_name, value in getattr(res, "device_busy_wo_overlap_ms", {}).items():
+            merged_busy_wo_overlap_ms[device_name] = merged_busy_wo_overlap_ms.get(device_name, 0.0) + float(value)
+        for device_name, value in getattr(res, "device_busy_wi_overlap_ms", {}).items():
+            merged_busy_wi_overlap_ms[device_name] = merged_busy_wi_overlap_ms.get(device_name, 0.0) + float(value)
+
+    device_names = sorted(
+        set(merged_compute_ms.keys())
+        | set(merged_comm_ms.keys())
+        | set(merged_busy_wo_overlap_ms.keys())
+        | set(merged_busy_wi_overlap_ms.keys())
+    )
+    device_usage = {}
+    for device_name in device_names:
+        compute_ms = float(merged_compute_ms.get(device_name, 0.0))
+        comm_ms = float(merged_comm_ms.get(device_name, 0.0))
+        busy_wo_overlap_ms = float(merged_busy_wo_overlap_ms.get(device_name, compute_ms + comm_ms))
+        busy_wi_overlap_ms = float(merged_busy_wi_overlap_ms.get(device_name, max(compute_ms, comm_ms)))
+        device_usage[device_name] = {
+            "compute_ms": round(compute_ms, 6),
+            "comm_ms": round(comm_ms, 6),
+            "busy_wo_overlap_ms": round(busy_wo_overlap_ms, 6),
+            "busy_wi_overlap_ms": round(busy_wi_overlap_ms, 6),
+            "compute_ratio": round(compute_ms / horizon_ms, 6) if horizon_ms > 0 else float("nan"),
+            "comm_ratio": round(comm_ms / horizon_ms, 6) if horizon_ms > 0 else float("nan"),
+            "busy_wo_overlap_ratio": round(busy_wo_overlap_ms / horizon_ms, 6) if horizon_ms > 0 else float("nan"),
+            "busy_wi_overlap_ratio": round(busy_wi_overlap_ms / horizon_ms, 6) if horizon_ms > 0 else float("nan"),
+            "total_ratio": round(busy_wo_overlap_ms / horizon_ms, 6) if horizon_ms > 0 else float("nan"),
+        }
+    return device_usage
+
+
+def summarize_device_usage(res_list: List[SimulationResult],
+                           sim_time_end: float) -> str:
+    device_usage = summarize_device_usage_data(res_list, sim_time_end)
+    if not device_usage:
+        return ""
+
+    lines = []
+    lines.append("=== Device Timing Summary ===")
+    lines.append(f"ratio_denominator={float(sim_time_end) * 1000.0:.3f} ms")
+    for device_name, stat in device_usage.items():
+        lines.append(
+            f"{device_name}: "
+            # f"compute_ms={stat['compute_ms']:.6f}, "
+            # f"comm_ms={stat['comm_ms']:.6f}, "
+            # f"busy_wo_overlap_ms={stat['busy_wo_overlap_ms']:.6f}, "
+            # f"busy_wi_overlap_ms={stat['busy_wi_overlap_ms']:.6f}, "
+            # f"comp_ratio={stat['compute_ratio']:.3f}, "
+            # f"comm_ratio={stat['comm_ratio']:.3f}, "
+            # f"busy_wo_overlap_ratio={stat['busy_wo_overlap_ratio']:.3f}, "
+            # f"busy_wi_overlap_ratio={stat['busy_wi_overlap_ratio']:.3f}"
+            
+            f"comp_ratio={stat['compute_ratio']:.3f}, "
+            f"comm_ratio={stat['comm_ratio']:.3f}, "
+            f"busy_ratio={stat['busy_wo_overlap_ratio']:.3f}"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _summarize_group(name: str, reqs: list[Request], t_end: float) -> str:
     n = len(reqs)
     if n == 0:
@@ -88,6 +162,9 @@ def summarize_metrics(res_list: List[SimulationResult],
     lines.append(f"throughput={total_gen_tokens/t_end} token/s")
     lines.append("")
     lines.append(_summarize_group("ALL", finished, float(t_end)))
+    device_usage_summary = summarize_device_usage(res_list, float(t_end))
+    if device_usage_summary:
+        lines.append(device_usage_summary)
     # lines.append(_summarize_group("ALL", processed, float(t_end)))
 
     # lines.append(_summarize_group("PRIORITY", prio, float(t_end)))

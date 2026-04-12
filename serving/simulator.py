@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import defaultdict
 from typing import List, Tuple
 import numpy as np
 from math import ceil, floor
@@ -37,6 +38,11 @@ class Simulator:
         self.rng = np.random.default_rng(sim_cfg.seed)
 
         self.t: float = 0.0
+        self.device_compute_ms = defaultdict(float)
+        self.device_comm_ms = defaultdict(float)
+        self.device_busy_wo_overlap_ms = defaultdict(float)
+        self.device_busy_wi_overlap_ms = defaultdict(float)
+        self.perf_profile_history = None
         self.next_arrival: float = self._exp_interarrival()
 
         # Two-level FIFO queues
@@ -114,7 +120,6 @@ class Simulator:
             # pm, gm, ps, gs = 10240, 10240, 2048.0, 2048.0 # prompt_mean, gen_mean, prompt_std, gen_std
             # pm, gm, ps, gs = 8192, 8192, 2048.0, 2048.0 # prompt_mean, gen_mean, prompt_std, gen_std
             pm, gm, ps, gs = 4096, 4096, 2048.0, 2048.0 # prompt_mean, gen_mean, prompt_std, gen_std
-
 
         prompt_tokens = self._sample_nonneg_int_normal(pm, ps, min_value=1)
         target_gen_tokens = self._sample_nonneg_int_normal(gm, gs, min_value=1)
@@ -282,20 +287,25 @@ class Simulator:
         sub_batch_num = self.sim_cfg.sub_batch_num
         if self.perf_num_counter % evaluation_cycle_stride == 1:
             if not self.sim_cfg.use_pp_sub_batch or sub_batch_num == 1:
-                step_time_s = self.ptree.run_from_begin_node(begin_node,
-                                                             self.active,
-                                                             False,
-                                                             self.sim_cfg.use_mp_sub_batch) / 1000
+                step_profile = self.ptree.run_from_begin_node(begin_node,
+                                                              self.active,
+                                                              False,
+                                                              self.sim_cfg.use_mp_sub_batch,
+                                                              return_profile=True)
+                step_time_s = step_profile.total_time_ms / 1000.0
                 # print("batch_size:", len(self.active), "step_time_s:", step_time_s)
             else:
                 sub_batch_size = max(1, ceil(len(self.active) / sub_batch_num))
                 random_indexes = random.sample(range(len(self.active)), sub_batch_size)
                 sub_batch_active = [self.active[i] for i in random_indexes]
-                sub_batch_step_time_s = self.ptree.run_from_begin_node(begin_node,
-                                                                       sub_batch_active,
-                                                                       True,
-                                                                       self.sim_cfg.use_mp_sub_batch) / 1000
+                sub_batch_profile = self.ptree.run_from_begin_node(begin_node,
+                                                                   sub_batch_active,
+                                                                   True,
+                                                                   self.sim_cfg.use_mp_sub_batch,
+                                                                   return_profile=True)
+                sub_batch_step_time_s = sub_batch_profile.total_time_ms / 1000.0
                 step_time_s = sub_batch_num * sub_batch_step_time_s
+                step_profile = sub_batch_profile.scaled(sub_batch_num)
                 # update delay time for requests
                 for idx, req in enumerate(self.active):
                     if req in sub_batch_active:
@@ -305,9 +315,21 @@ class Simulator:
                     req.accum_delay_time += sub_batch_step_time_s * offset_cycle_num * acc_times
 
             self.perf_result_history = step_time_s
+            self.perf_profile_history = step_profile
         else:
             step_time_s = self.perf_result_history
+            step_profile = self.perf_profile_history
         # print(step_time_s)
+
+        if step_profile is not None:
+            for device_name, value in step_profile.per_device_compute_ms.items():
+                self.device_compute_ms[device_name] += value
+            for device_name, value in step_profile.per_device_comm_ms.items():
+                self.device_comm_ms[device_name] += value
+            for device_name, value in step_profile.per_device_busy_wo_overlap_ms.items():
+                self.device_busy_wo_overlap_ms[device_name] += value
+            for device_name, value in step_profile.per_device_busy_wi_overlap_ms.items():
+                self.device_busy_wi_overlap_ms[device_name] += value
 
         self.t += step_time_s
         self.busy_time += step_time_s
@@ -352,4 +374,8 @@ class Simulator:
         return SimulationResult(t_end=self.sim_cfg.t_end,
                                 busy_time=self.busy_time,
                                 finished=self.finished,
-                                running=self.active)
+                                running=self.active,
+                                device_compute_ms=dict(self.device_compute_ms),
+                                device_comm_ms=dict(self.device_comm_ms),
+                                device_busy_wo_overlap_ms=dict(self.device_busy_wo_overlap_ms),
+                                device_busy_wi_overlap_ms=dict(self.device_busy_wi_overlap_ms))

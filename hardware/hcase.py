@@ -26,7 +26,9 @@ pim_mem_cap = 80
 
 # NVLink 4.0
 nvl_bw = 350 # GB/s
-nvl_lat = 10000 # 5000 ns
+nvl_lat = 5000 # 5000 ns
+# nvl_bw = 3500 # GB/s
+# nvl_lat = 10 # 5000 ns
 
 # Main Memory
 mm_bw = npu_bw * 1000 # 单位换算

@@ -5,7 +5,7 @@ import ast
 
 from system.system import System
 from system.config import SystemConfig, ModelConfigs
-from system.metrics import summarize_metrics, summarize_metrics_data
+from system.metrics import summarize_metrics, summarize_metrics_data, summarize_device_usage_data
 
 from utils.parse_args import parse_args
 
@@ -41,6 +41,7 @@ def main():
 
     print(summarize_metrics(result, args.t_end))
     T_token, L, f_dist, p_dist, T_req = summarize_metrics_data(result, args.t_end)
+    device_usage = summarize_device_usage_data(result, args.t_end)
     if args.out:
         # if os.path.exists(args.out):
         #     os.remove(args.out)
@@ -63,6 +64,7 @@ def main():
                                 "peak_seq_len": int(sys_cfg.peak_seq_len),
                                 "runtime_reserve_ratio": float(sys_cfg.runtime_reserve_ratio),
                                 "subgraph_batch_info": getattr(system, "last_subgraph_batch_info", []),
+                                "device_usage": device_usage,
                                 }, ensure_ascii=False) + "\n")
 
     end_t = time.perf_counter()

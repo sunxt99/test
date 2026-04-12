@@ -8,8 +8,8 @@ req_dist_configs=(
 #  "0.0 1.0 0.0 2048"
 #  "0.0 0.0 1.0 10240"
   "0.8 0.1 0.1 2048"
-  "0.6 0.3 0.1 4096"
-  "0.5 0.3 0.2 8192"
+#  "0.6 0.3 0.1 4096"
+#  "0.5 0.3 0.2 8192"
 #  "0.3 0.5 0.2"
 #  "0.2 0.3 0.5"
 )
@@ -33,8 +33,8 @@ hw_configs=(
 #  "8 17 heuristics" # NeuPIM (8+8) + PP2+TP4 (P17)
 #  "9 16 baseline"   # AttAcc (8+8) + Baseline (P16)
 #  "9 17 heuristics"   # AttAcc (8+8) + PP2+TP4 (P16)
-  "9 19 new1"   # AttAcc (8+8) + P19
-  "9 20 new2"
+#  "9 19 new1"   # AttAcc (8+8) + P19
+#  "9 20 new2"
 
 ######### Pre Experiment #########
 #  "0 3 4npu4pimNeupimXpTp4"   # NeuPIM (4+4) + Baseline (XP+TP4)
@@ -53,8 +53,8 @@ for hw in "${hw_configs[@]}"; do
     for lam in 100; do
       OUT="result/model${model_index}_req${req_type_num}_${arch_name}_lam${lam}_${req0}_${req1}_${req2}.jsonl"
       rm -f "$OUT"
-#      for B in 256; do # model0
-      for B in 1 2 4 8 16 32 64 96 128 256 320 384 448 512; do # model0 (4NPU+4PIM)
+      for B in 512; do # model0
+#      for B in 1 2 4 8 16 32 64 96 128 256 320 384 448 512; do # model0 (4NPU+4PIM)
 #      for B in 1 8 64 128 256 448 512; do # model0 (4NPU+4PIM, lam=100 就够了)
 #      for B in 1 16 64 128 256 512 768 1024 1560 2048; do # model0 (8NPU+8PIM, lam=300 才行)
       # for B in 1 2 4 8 16 32 48 64 96 128 160 196 228 256 288 384; do # model1

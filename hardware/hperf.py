@@ -1,4 +1,5 @@
 from hardware.htraversal import *
+from hardware.hcase import nvl_bw, nvl_lat
 
 def peer_to_peer_communication_time_cost(src_device: HwUnit, dst_device: HwUnit, comm_byte_size: int):
     if src_device == dst_device:
@@ -29,8 +30,11 @@ def all_reduce_communication_time_cost(device_list: List[HwUnit], comm_byte_size
     # L = 10000 / pow(10, 9) # LAT = 5000 ns
 
     # H100 NVLink
-    B = 300 * pow(10,9)   # BW = 300 GB/s
-    L = 10000 / pow(10, 9) # LAT = 10000 ns
+    B = nvl_bw * pow(10,9)
+    L = nvl_lat / pow(10,9)
+
+    # B = 300 * pow(10,9)   # BW = 300 GB/s
+    # L = 10000 / pow(10, 9) # LAT = 10000 ns
 
     # B = 350 * pow(10,9)   # BW = 300 GB/s
     # L = 3000 / pow(10, 9) # LAT = 10000 ns
