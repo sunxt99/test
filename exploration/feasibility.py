@@ -20,7 +20,7 @@ class FeasibilityConfig:
     root_init: RootInit
     mem_cap_by_device_gb: Dict[int, float]
     bytes_by_device: Dict[int, int]
-    peak_seq_len: int = 8192
+    peak_seq_len: int = 2048
     runtime_reserve_ratio: float = 0.10
     attach_hardware_leaves: bool = True
 

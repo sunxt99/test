@@ -40,13 +40,14 @@ def main():
     result = system.run_system()
 
     print(summarize_metrics(result, args.t_end))
-    T, L, f_dist, p_dist = summarize_metrics_data(result, args.t_end)
+    T_token, L, f_dist, p_dist, T_req = summarize_metrics_data(result, args.t_end)
     if args.out:
         # if os.path.exists(args.out):
         #     os.remove(args.out)
         with open(args.out, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"T":T,
+            f.write(json.dumps({"T":T_token,
                                 "L":L,
+                                "T_req": T_req,
                                 "B":sys_cfg.max_batch_lo,
                                 # finished_dist
                                 "fd":f_dist,

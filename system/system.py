@@ -62,7 +62,7 @@ class System:
             root_init=self._build_root_init_for_feasibility(),
             mem_cap_by_device_gb=mem_cap_by_device_gb,
             bytes_by_device=self._build_bytes_by_device(),
-            peak_seq_len=int(getattr(self.sys_cfg, "peak_seq_len", 10240)),
+            peak_seq_len=int(getattr(self.sys_cfg, "peak_seq_len", 2048)),
             runtime_reserve_ratio=float(getattr(self.sys_cfg, "runtime_reserve_ratio", 0.0)),
             attach_hardware_leaves=False,
         )
@@ -174,8 +174,8 @@ class System:
             this_sys_cfg.use_pp_sub_batch = True
 
             # 指定是否采用 MP sub batch
-            # this_sys_cfg.use_mp_sub_batch = False
-            this_sys_cfg.use_mp_sub_batch = True
+            this_sys_cfg.use_mp_sub_batch = False
+            # this_sys_cfg.use_mp_sub_batch = True
 
             # 分配 lambda (req rate)
             this_lambda = sum([
@@ -210,5 +210,7 @@ class System:
             simulator = Simulator(this_sys_cfg, self.model_cfg, sample_prob, self.ptree)
             single_thread_result = simulator.run(begin_node)
             simulation_result.append(single_thread_result)
+            print(summarize_metrics([single_thread_result], self.sys_cfg.t_end))
+            print("\n\n\n")
 
         return simulation_result

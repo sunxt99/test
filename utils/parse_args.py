@@ -34,7 +34,7 @@ def parse_args():
     p.add_argument("--reserve-hi", type=int, default=32,
                    help="Reserved slots for priority in reserve mode (reduces normal concurrency). Default 16.")
 
-    p.add_argument("--peak-seq-len", type=int, default=10240,
+    p.add_argument("--peak-seq-len", type=int, default=2048,
                    help="Peak sequence length used by the exploration memory-feasibility guard. Default 10240.")
     p.add_argument("--runtime-reserve-ratio", type=float, default=0.0,
                    help="Reserved runtime memory ratio in [0,1) for exploration memory-feasibility. Default 0.0.")

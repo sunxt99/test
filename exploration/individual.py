@@ -270,6 +270,7 @@ class Individual:
     # Multi-objective metrics (v4: Pareto throughput-latency)
     # objectives: (throughput, latency) where throughput is MAXIMIZED and latency is MINIMIZED.
     throughput: Optional[float] = None
+    throughput_req: Optional[float] = None
     latency: Optional[float] = None
     objectives: Optional[Tuple[float, float]] = None
 

@@ -111,12 +111,11 @@ def format_individual(
     Fix:
       - root node now prints its attrs/devices the same way as other nodes.
     """
-    topo = ind.topology
     lines: List[str] = []
 
     if show_fitness:
         lines.append(f"uid: {ind.uid}")
-        lines.append(f"fitness: T={ind.throughput} L={ind.latency}")
+        lines.append(f"fitness: T={ind.throughput} L={ind.latency} T_req={ind.throughput_req}")
     lines.append(f"req_type_num: {ind.req_type_num}")
     lines.append(f"devices: {list(ind.devices)}")
     lines.append(f"batch_size: {getattr(ind, 'batch_size', None)}")
@@ -146,6 +145,7 @@ def log_individual_json(ind: Individual, path:str) -> None:
         f.write(json.dumps({"T": ind.throughput,
                             "L": ind.latency,
                             # bs: batch sizes
+                            "T_req": ind.throughput_req,
                             "bs": getattr(ind, 'batch_size', None),
                             # sgbs: sub graph batch sizes
                             "sgbs": getattr(ind, 'sub_graph_batch_sizes', {}),
@@ -181,6 +181,7 @@ def individual_to_dict(ind: Individual) -> Dict[str, Any]:
         "memory_feasibility_log": getattr(ind, "memory_feasibility_log", None),
         "throughput": ind.throughput,
         "latency": ind.latency,
+        "throughput_req": ind.throughput_req,
         "pareto_rank": ind.pareto_rank,
         "crowding": ind.crowding,
         "topology": [

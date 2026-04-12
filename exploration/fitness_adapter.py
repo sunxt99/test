@@ -87,7 +87,8 @@ class SystemEvaluatorV3:
             sub_batch_num = self.ptree.summarise_layer_info(begin_node)
             this_sys_cfg.sub_batch_num = sub_batch_num
             this_sys_cfg.use_pp_sub_batch = True
-            this_sys_cfg.use_mp_sub_batch = True
+            # this_sys_cfg.use_mp_sub_batch = True
+            this_sys_cfg.use_mp_sub_batch = False
             this_sys_cfg.max_batch_lo = self._resolve_sub_graph_batch_size(root_node, begin_node, batch_size)
 
             this_lambda = sum(
@@ -104,6 +105,7 @@ class SystemEvaluatorV3:
             results.append(single_thread_result)
 
         # return results
+        # print(summarize_metrics(results, self.sys_cfg.t_end))
         return summarize_metrics_data(results, self.sys_cfg.t_end)
 
     def fitness(self, root_node: Any, batch_size: int = 1) -> Any:

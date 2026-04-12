@@ -54,7 +54,7 @@ class SystemConfig:
     reserve_hi: int = 16       # reserved slots for priority in reserve mode (hard reserve)
 
     # Exploration-aligned memory feasibility knobs
-    peak_seq_len: int = 10240
+    peak_seq_len: int = 2048
     runtime_reserve_ratio: float = 0.0
 
     # Idle batching wait (seconds)

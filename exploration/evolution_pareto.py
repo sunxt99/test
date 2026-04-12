@@ -629,7 +629,7 @@ def _evaluate_individual(
 
     try:
         res = fitness_fn(root, ind.batch_size)
-        thr, lat, f_dist, p_dist = _parse_objectives(res)
+        thr, lat, f_dist, p_dist, thr_req = _parse_objectives(res)
         if (not math.isfinite(thr)) or (not math.isfinite(lat)):
             return False
         ind.throughput = thr
@@ -637,6 +637,7 @@ def _evaluate_individual(
         ind.objectives = (thr, lat)
         ind.f_dist = f_dist
         ind.p_dist = p_dist
+        ind.throughput_req = thr_req
     except Exception:
         return False
     return True
@@ -1282,7 +1283,7 @@ def initialize_population_with_seeds(
     pop.sort(key=lambda x: (10**9 if x.pareto_rank is None else x.pareto_rank, -x.crowding))
     return pop
 
-def _parse_objectives(fitness_result: Any) -> Tuple[float, float, List[Any], List[Any]]:
+def _parse_objectives(fitness_result: Any) -> Tuple[float, float, List[Any], List[Any], float]:
     """Parse evaluator output into (throughput, latency).
 
     In this codebase, pareto-mode simulator outputs are often shaped like:
@@ -1313,8 +1314,9 @@ def _parse_objectives(fitness_result: Any) -> Tuple[float, float, List[Any], Lis
             lat = latency_penalty
         f_dist = fitness_result[2]
         p_dist = fitness_result[3]
+        thr_req = fitness_result[4]
 
-        return thr, lat, f_dist, p_dist
+        return thr, lat, f_dist, p_dist, thr_req
 
     # # dict
     # if isinstance(fitness_result, dict):
@@ -1980,7 +1982,7 @@ def evolve(
             return None
         try:
             res = fitness_fn(root, ind.batch_size)
-            thr, lat, f_dist, p_dist = _parse_objectives(res)
+            thr, lat, f_dist, p_dist, thr_req = _parse_objectives(res)
             if (not math.isfinite(thr)) or (not math.isfinite(lat)):
                 return None
             ind.throughput = thr
@@ -1988,6 +1990,7 @@ def evolve(
             ind.objectives = (thr, lat)
             ind.f_dist = f_dist
             ind.p_dist = p_dist
+            ind.throughput_req = thr_req
 
             # dse scatter point
             if dse_out:

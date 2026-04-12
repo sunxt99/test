@@ -49,6 +49,9 @@ class ParallelismTree:
             16: build_case_16,
             17: build_case_17,
             18: build_case_18,
+            19: build_case_19,
+            20: build_case_20,
+            21: build_case_21,
         }
         try:
             build_fn = BUILD_CASES[case_idx]
@@ -294,12 +297,12 @@ class ParallelismTree:
                                                                                    previous_module_active_leaf_indexes,
                                                                                    module_active_leaf_indexes,
                                                                                    req_type_distribution_half2)
-                    module_time_cost_ms = computation_time_cost_ms + communication_time_cost_ms
-                    # module_time_cost_ms = max(computation_time_cost_ms, communication_time_cost_ms)
-                    module_half1_time_cost_ms = computation_half1_time_cost_ms + communication_half1_time_cost_ms
-                    # module_half1_time_cost_ms = max(computation_half1_time_cost_ms, communication_half1_time_cost_ms)
-                    module_half2_time_cost_ms = computation_half2_time_cost_ms + communication_half2_time_cost_ms
-                    # module_half2_time_cost_ms = max(computation_half2_time_cost_ms, communication_half2_time_cost_ms)
+                    # module_time_cost_ms = computation_time_cost_ms + communication_time_cost_ms
+                    module_time_cost_ms = max(computation_time_cost_ms, communication_time_cost_ms)
+                    # module_half1_time_cost_ms = computation_half1_time_cost_ms + communication_half1_time_cost_ms
+                    module_half1_time_cost_ms = max(computation_half1_time_cost_ms, communication_half1_time_cost_ms)
+                    # module_half2_time_cost_ms = computation_half2_time_cost_ms + communication_half2_time_cost_ms
+                    module_half2_time_cost_ms = max(computation_half2_time_cost_ms, communication_half2_time_cost_ms)
                     module_half_time_cost_ms = max(module_half1_time_cost_ms, module_half2_time_cost_ms)
                     # print(computation_time_cost_ms, communication_time_cost_ms)
                     # layer_idx = 0 和 module_idx = 0 的情况不能记录进 cache，否则后面的 tp 都没有了

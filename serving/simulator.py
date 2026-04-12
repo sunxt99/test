@@ -107,11 +107,13 @@ class Simulator:
             pm, gm, ps, gs = 256, 256, 128.0, 128.0 # prompt_mean, gen_mean, prompt_std, gen_std
         elif cls == 1:
             # pm, gm, ps, gs = 1024, 1024, 256.0, 256.0 # prompt_mean, gen_mean, prompt_std, gen_std
-            pm, gm, ps, gs = 4096, 4096, 2048.0, 2048.0 # prompt_mean, gen_mean, prompt_std, gen_std
+            # pm, gm, ps, gs = 4096, 4096, 2048.0, 2048.0 # prompt_mean, gen_mean, prompt_std, gen_std
+            pm, gm, ps, gs = 1024, 1024, 512.0, 512.0 # prompt_mean, gen_mean, prompt_std, gen_std
         else:
             # pm, gm, ps, gs = 2048, 2048, 1024.0, 1024.0 # prompt_mean, gen_mean, prompt_std, gen_std
-            # pm, gm, ps, gs = 4096, 4096, 2048.0, 2048.0 # prompt_mean, gen_mean, prompt_std, gen_std
-            pm, gm, ps, gs = 10240, 10240, 2048.0, 2048.0 # prompt_mean, gen_mean, prompt_std, gen_std
+            # pm, gm, ps, gs = 10240, 10240, 2048.0, 2048.0 # prompt_mean, gen_mean, prompt_std, gen_std
+            # pm, gm, ps, gs = 8192, 8192, 2048.0, 2048.0 # prompt_mean, gen_mean, prompt_std, gen_std
+            pm, gm, ps, gs = 4096, 4096, 2048.0, 2048.0 # prompt_mean, gen_mean, prompt_std, gen_std
 
 
         prompt_tokens = self._sample_nonneg_int_normal(pm, ps, min_value=1)

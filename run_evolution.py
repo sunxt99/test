@@ -82,9 +82,9 @@ def main() -> None:
         result_to_fitness=result_to_fitness,
     )
 
-    init_cfg = InitConfig(population_size=50,
+    init_cfg = InitConfig(population_size=80,
                           # population_size=30,
-                          max_depth=4,
+                          max_depth=5,
                           max_children=8,
                           p_stop_expand=0.40,
 
@@ -92,34 +92,46 @@ def main() -> None:
                           p_stratified_init = 0.3,
                           p_random_init = 0.2,
 
-                          # batch_size_choices=(256,))  # model0
                           batch_size_choices=(1,2,4,8,16,32,64,128,160,196,256,320,352,384,416,448,480,512),  # model0
                           # batch_size_choices=(1,2,4,8,16,32,48,64,96,128,160,196), # model1
                           # batch_size_choices=(1,2,4,8,16,32,48,64,96,128,160,196), # model2
                           # batch_size_choices=(1,2,4,8,16,32,48,64,96,112,128), # model3
 
-                          # disabled_parallelisms=(Parallelism.DP, Parallelism.XP),
-                          disabled_parallelisms=(),
+                          # helix
+                          # disabled_parallelisms=(Parallelism.XP,),
+                          # dynamo
+                          # disabled_parallelisms=(Parallelism.XP, Parallelism.PP,),
+                          # hexgen and icml
+                          # disabled_parallelisms=(Parallelism.XP, Parallelism.DP,),
+
+                          # disabled_parallelisms=(Parallelism.TP,)
+                          # disabled_parallelisms=(Parallelism.DP,)
+                          # disabled_parallelisms=(Parallelism.PP,)
+                          disabled_parallelisms=(Parallelism.DP, Parallelism.TP)
                           )
 
+    # pop_seed_indexes = []
+    # pop_seed_indexes = [16,17,18,19]
+    pop_seed_indexes = [16,17,18]
 
-    evo_cfg = EvoConfig(generations=3,
-                        elite_size=8,
+    evo_cfg = EvoConfig(generations=6,
+                        elite_size=15,
 
-                        p_rewrite_mut=0.5,
-                        p_numeric_mut=0.5,
-                        p_mapping_refine_mut=0.00,
+                        p_rewrite_mut=0.45,
+                        p_numeric_mut=0.45,
+                        p_mapping_refine_mut=0.10,
 
-                        p_skeleton_expand=0.25,
-                        p_local_refine=0.30,
+                        p_skeleton_expand=0.30,
+                        p_local_refine=0.25,
                         p_relabel=0.15,
                         p_repartition=0.20,
                         p_rollback=0.10,
                         rewrite_max_steps=4,
 
                         enable_cache=True,
-                        # enable_subgraph_batch_mut=True,
-                        enable_subgraph_batch_mut=False,
+
+                        enable_subgraph_batch_mut=True,
+                        # enable_subgraph_batch_mut=False,
 
                         subgraph_batch_max_mutated=1,
                         numeric_mutation_max_targets=2,
@@ -146,12 +158,14 @@ def main() -> None:
         16: build_case_16,
         17: build_case_17,
         18: build_case_18,
+        19: build_case_19,
     }
 
+    # pop_seed_indexes = []
     # pop_seed_indexes = [3,4]
     # pop_seed_indexes = [0,1,4,12]
-    # pop_seed_indexes = []
-    pop_seed_indexes = [16,17,18]
+    # pop_seed_indexes = [16,17,18]
+
     pop_seed_roots = []
     for i in pop_seed_indexes:
         if i not in builders:

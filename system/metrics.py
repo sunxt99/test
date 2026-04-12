@@ -33,18 +33,25 @@ def _summarize_group(name: str, reqs: list[Request], t_end: float) -> str:
 
     lines = []
     lines.append(f"[{name}] finished={n}, throughput={n / t_end:.6f} req/s")
-    lines.append(f"  prompt_tokens mean={float(np.mean(prompt)):.3f}, p50={_pct(prompt, 50):.3f}, p95={_pct(prompt, 95):.3f}")
-    lines.append(f"  gen_tokens mean={float(np.mean(gen_tgt)):.3f}, p50={_pct(gen_tgt, 50):.3f}, p95={_pct(gen_tgt, 95):.3f}")
-    lines.append("  latency_ms: " +
-                 f"mean={_fmt_ms(float(np.mean(lat)))}, p50={_fmt_ms(_pct(lat, 50))}, p95={_fmt_ms(_pct(lat, 95))}, p99={_fmt_ms(_pct(lat, 99))}")
-    lines.append("  queueing_ms: " +
-                 f"mean={_fmt_ms(float(np.mean(qd)))}, p50={_fmt_ms(_pct(qd, 50))}, p95={_fmt_ms(_pct(qd, 95))}, p99={_fmt_ms(_pct(qd, 99))}")
-    lines.append("  service_ms: " +
-                 f"mean={_fmt_ms(float(np.mean(st)))}, p50={_fmt_ms(_pct(st, 50))}, p95={_fmt_ms(_pct(st, 95))}, p99={_fmt_ms(_pct(st, 99))}")
+    # lines.append(f"  prompt_tokens mean={float(np.mean(prompt)):.3f}, p50={_pct(prompt, 50):.3f}, p95={_pct(prompt, 95):.3f}")
+    # lines.append(f"  gen_tokens mean={float(np.mean(gen_tgt)):.3f}, p50={_pct(gen_tgt, 50):.3f}, p95={_pct(gen_tgt, 95):.3f}")
+    # lines.append("  latency_ms: " +
+    #              f"mean={_fmt_ms(float(np.mean(lat)))}, p50={_fmt_ms(_pct(lat, 50))}, p95={_fmt_ms(_pct(lat, 95))}, p99={_fmt_ms(_pct(lat, 99))}")
+    # lines.append("  queueing_ms: " +
+    #              f"mean={_fmt_ms(float(np.mean(qd)))}, p50={_fmt_ms(_pct(qd, 50))}, p95={_fmt_ms(_pct(qd, 95))}, p99={_fmt_ms(_pct(qd, 99))}")
+    # lines.append("  service_ms: " +
+    #              f"mean={_fmt_ms(float(np.mean(st)))}, p50={_fmt_ms(_pct(st, 50))}, p95={_fmt_ms(_pct(st, 95))}, p99={_fmt_ms(_pct(st, 99))}")
+    # lines.append("  user_throughput_token/s: " +
+    #              f"mean={_fmt_ms(float(np.mean(usr_throughput)))}, p10={_fmt_ms(_pct(usr_throughput, 10))}, p50={_fmt_ms(_pct(usr_throughput, 50))}, p90={_fmt_ms(_pct(usr_throughput, 90))}")
+    # lines.append("  TPOT_ms: " +
+    #              f"mean={_fmt_ms(float(np.mean(tpot)))}, p50={_fmt_ms(_pct(tpot, 50))}, p90={_fmt_ms(_pct(tpot, 90))}, p99={_fmt_ms(_pct(tpot, 99))}")
+    # lines.append("")
     lines.append("  user_throughput_token/s: " +
-                 f"mean={_fmt_ms(float(np.mean(usr_throughput)))}, p10={_fmt_ms(_pct(usr_throughput, 10))}, p50={_fmt_ms(_pct(usr_throughput, 50))}, p90={_fmt_ms(_pct(usr_throughput, 90))}")
+                 f"p50={_fmt_ms(_pct(usr_throughput, 50))}, p90={_fmt_ms(_pct(usr_throughput, 90))}, p99={_fmt_ms(_pct(usr_throughput, 99))}")
+    lines.append("  service_ms: " +
+                 f"p50={_fmt_ms(_pct(st, 50))}, p90={_fmt_ms(_pct(st, 90))}, p99={_fmt_ms(_pct(st, 99))}")
     lines.append("  TPOT_ms: " +
-                 f"mean={_fmt_ms(float(np.mean(tpot)))}, p90={_fmt_ms(_pct(tpot, 90))}, p95={_fmt_ms(_pct(tpot, 95))}, p99={_fmt_ms(_pct(tpot, 99))}")
+                 f"p50={_fmt_ms(_pct(tpot, 50))}, p90={_fmt_ms(_pct(tpot, 90))}, p99={_fmt_ms(_pct(tpot, 99))}")
     lines.append("")
     return "\n".join(lines)
 
@@ -81,6 +88,8 @@ def summarize_metrics(res_list: List[SimulationResult],
     lines.append(f"throughput={total_gen_tokens/t_end} token/s")
     lines.append("")
     lines.append(_summarize_group("ALL", finished, float(t_end)))
+    # lines.append(_summarize_group("ALL", processed, float(t_end)))
+
     # lines.append(_summarize_group("PRIORITY", prio, float(t_end)))
     # lines.append(_summarize_group("NORMAL", normal, float(t_end)))
 
@@ -167,7 +176,11 @@ def summarize_metrics_data(res_list: List[SimulationResult],
     # lines.append(_summarize_group("ALL", finished, float(t_end)))
 
     # 吞吐是整体的，P99统计的是已完成任务的
-    return [gen_tokens/t_end, _summarize_group_data("Finished", finished, float(t_end)), finished_dist, processed_dist]
+    return [gen_tokens/t_end,
+            _summarize_group_data("Finished", finished, float(t_end)),
+            finished_dist,
+            processed_dist,
+            finished_num / t_end]
 
     # 吞吐是整体的，P99统计的是所有已进行任务的
     # return [gen_tokens/t_end, _summarize_group_data("Processed", processed, float(t_end)), finished_dist, processed_dist]
